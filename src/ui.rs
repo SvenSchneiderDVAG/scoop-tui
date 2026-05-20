@@ -2,9 +2,21 @@ use ratatui::prelude::*;
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Cell, Clear, Padding, Paragraph, Row, Table, Wrap};
 
-use crate::app::App;
+use crate::app::{App, InputMode};
 
-pub fn draw(frame: &mut Frame<'_>, app: &App) {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AppLayout {
+    pub header: Rect,
+    pub body: Rect,
+    pub packages: Rect,
+    pub details: Rect,
+    pub footer: Rect,
+    pub confirmation_modal: Rect,
+    pub setup_modal: Rect,
+    pub help_modal: Rect,
+}
+
+pub fn layout_for(area: Rect) -> AppLayout {
     let root = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -12,14 +24,41 @@ pub fn draw(frame: &mut Frame<'_>, app: &App) {
             Constraint::Min(10),
             Constraint::Length(3),
         ])
-        .split(frame.area());
+        .split(area);
+    let body = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(74), Constraint::Percentage(26)])
+        .split(root[1]);
+    let side_panel = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Percentage(56), Constraint::Percentage(44)])
+        .split(body[1]);
 
-    draw_header(frame, root[0], app);
-    draw_body(frame, root[1], app);
-    draw_footer(frame, root[2], app);
+    AppLayout {
+        header: root[0],
+        body: root[1],
+        packages: body[0],
+        details: side_panel[0],
+        footer: root[2],
+        confirmation_modal: centered_rect(48, 24, area),
+        setup_modal: centered_rect(74, 34, area),
+        help_modal: centered_rect(58, 62, area),
+    }
+}
+
+pub fn draw(frame: &mut Frame<'_>, app: &App) {
+    let layout = layout_for(frame.area());
+
+    draw_header(frame, layout.header, app);
+    draw_body(frame, layout.body, app);
+    draw_footer(frame, layout.footer, app);
     draw_confirmation_modal(frame, app);
     draw_setup_modal(frame, app);
     draw_help_modal(frame, app);
+
+    if app.input_mode == InputMode::Search {
+        frame.set_cursor_position(search_cursor_position(app, layout.header));
+    }
 }
 
 fn draw_header(frame: &mut Frame<'_>, area: Rect, app: &App) {
@@ -29,7 +68,10 @@ fn draw_header(frame: &mut Frame<'_>, area: Rect, app: &App) {
         app.search_query()
     };
     let status = Line::from(vec![
-        Span::styled("Scoop TUI 0.1.0", Style::default().fg(Color::Cyan)),
+        Span::styled(
+            format!("Scoop TUI {}", env!("CARGO_PKG_VERSION")),
+            Style::default().fg(Color::Cyan),
+        ),
         Span::raw("  |  "),
         Span::styled("View: ", Style::default().fg(Color::Cyan)),
         Span::styled(app.package_view.label(), Style::default().fg(Color::White)),
@@ -64,6 +106,22 @@ fn draw_header(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let header =
         Paragraph::new(status).block(Block::default().borders(Borders::ALL).title("scoop"));
     frame.render_widget(header, area);
+}
+
+pub(crate) fn search_cursor_position(app: &App, area: Rect) -> Position {
+    let prefix = format!(
+        "Scoop TUI {}  |  View: {}  |  Search: /",
+        env!("CARGO_PKG_VERSION"),
+        app.package_view.label()
+    );
+    let query_width = app.search_query().chars().count() as u16;
+    Position::new(
+        area.x
+            .saturating_add(1)
+            .saturating_add(prefix.chars().count() as u16)
+            .saturating_add(query_width),
+        area.y.saturating_add(1),
+    )
 }
 
 fn draw_body(frame: &mut Frame<'_>, area: Rect, app: &App) {
@@ -184,18 +242,21 @@ fn draw_side_panel(frame: &mut Frame<'_>, area: Rect, app: &App) {
 }
 
 fn draw_footer(frame: &mut Frame<'_>, area: Rect, app: &App) {
-    let mode = match app.input_mode {
-        crate::app::InputMode::Browse => "Browse",
-        crate::app::InputMode::Search => "Search",
-    };
-    let footer = format!(
-        "[{}]  [↑/↓] Navigate  [/] Filter  [s] Search Apps  [l] Toggle Installed  [i] Install  [r] Uninstall  [u] Update  [?] Help  [q] Quit",
-        mode
-    );
-    let footer = Paragraph::new(footer)
+    let footer = Paragraph::new(footer_text(app.input_mode))
         .style(Style::default().fg(Color::Yellow))
         .block(Block::default().borders(Borders::ALL));
     frame.render_widget(footer, area);
+}
+
+pub(crate) fn footer_text(input_mode: crate::app::InputMode) -> String {
+    let mode = match input_mode {
+        crate::app::InputMode::Browse => "Browse",
+        crate::app::InputMode::Search => "Search",
+    };
+    format!(
+        "[{}]  [↑/↓] Navigate  [/] Filter  [s] Search Apps  [l] Toggle Installed  [i] Install  [r] Uninstall  [u] Update  [?] Help  [q] Quit",
+        mode
+    )
 }
 
 fn draw_confirmation_modal(frame: &mut Frame<'_>, app: &App) {
@@ -395,7 +456,8 @@ fn truncate_for_table(value: &str, max_chars: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use ratatui::backend::TestBackend;
+    use ratatui::backend::{Backend, TestBackend};
+    use ratatui::layout::Position;
     use ratatui::Terminal;
 
     use super::*;
@@ -426,6 +488,26 @@ mod tests {
         assert!(rendered.contains("Details"));
         assert!(rendered.contains("Terminal"));
         assert!(rendered.contains("7zip"));
+    }
+
+    #[test]
+    fn positions_terminal_cursor_at_search_end_in_search_mode() {
+        let backend = MockBackend;
+        let mut app = App::new(backend.packages());
+        app.start_search();
+        app.set_search_query("git");
+        let backend = TestBackend::new(120, 32);
+        let mut terminal = Terminal::new(backend).expect("test terminal");
+
+        terminal
+            .draw(|frame| draw(frame, &app))
+            .expect("render frame");
+
+        let cursor_position = terminal
+            .backend_mut()
+            .get_cursor_position()
+            .expect("cursor position");
+        assert_eq!(cursor_position, Position::new(53, 1));
     }
 
     #[test]
