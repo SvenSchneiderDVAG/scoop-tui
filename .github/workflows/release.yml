@@ -1,0 +1,78 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - master
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  BIN_NAME: scoop-tui
+  TARGET: x86_64-pc-windows-msvc
+
+jobs:
+  windows:
+    name: Build and publish Windows release
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Read crate metadata
+        id: crate
+        shell: pwsh
+        run: |
+          $metadata = cargo metadata --no-deps --format-version 1 | ConvertFrom-Json
+          $name = $metadata.packages[0].name
+          $version = $metadata.packages[0].version
+          $tag = "v$version"
+
+          "name=$name" >> $env:GITHUB_OUTPUT
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "tag=$tag" >> $env:GITHUB_OUTPUT
+
+      - name: Ensure release tag is new
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.crate.outputs.tag }}
+        shell: bash
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1 || git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+            echo "::error title=Release already exists::${TAG} already exists. Bump the package version in Cargo.toml before merging to master."
+            exit 1
+          fi
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run tests
+        run: cargo test --locked
+
+      - name: Build Windows binary
+        run: cargo build --release --locked --target ${{ env.TARGET }}
+
+      - name: Stage release asset
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path dist -Force | Out-Null
+          Copy-Item "target/${{ env.TARGET }}/release/${{ env.BIN_NAME }}.exe" "dist/${{ env.BIN_NAME }}-windows-x86_64.exe"
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.crate.outputs.tag }}
+          VERSION: ${{ steps.crate.outputs.version }}
+        shell: bash
+        run: |
+          gh release create "$TAG" \
+            "dist/${BIN_NAME}-windows-x86_64.exe#${BIN_NAME}-windows-x86_64.exe" \
+            --target "$GITHUB_SHA" \
+            --title "${BIN_NAME} ${VERSION}" \
+            --generate-notes
