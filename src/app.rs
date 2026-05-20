@@ -156,6 +156,15 @@ impl App {
         self.selected
     }
 
+    pub fn select_filtered_index(&mut self, index: usize) -> bool {
+        if index >= self.filtered_indices().len() {
+            return false;
+        }
+
+        self.selected = index;
+        true
+    }
+
     pub fn move_down(&mut self) {
         let len = self.filtered_indices().len();
         if len > 0 {
@@ -496,6 +505,20 @@ mod tests {
         app.set_search_query("gitui");
 
         assert_eq!(app.selected_index(), 0);
+        assert_eq!(
+            app.selected_package().map(|package| package.name.as_str()),
+            Some("gitui")
+        );
+    }
+
+    #[test]
+    fn selects_package_by_filtered_row_index() {
+        let mut app = App::new(packages());
+        app.set_search_query("git");
+
+        assert!(app.select_filtered_index(1));
+
+        assert_eq!(app.selected_index(), 1);
         assert_eq!(
             app.selected_package().map(|package| package.name.as_str()),
             Some("gitui")

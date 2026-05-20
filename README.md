@@ -28,6 +28,15 @@ Keys:
 - `?` open or close help
 - `q` quit
 
+Mouse:
+
+- Scroll wheel moves package selection
+- Click a package row to select it
+- Click the search field to enter search mode
+- Click modal confirm/cancel actions
+- Click footer actions for help, view, search, install, update, and uninstall
+- Click the selected package homepage in Details to open it in the default browser
+
 ## Current Scope
 
 - Ratatui package table inspired by terminal package managers
@@ -38,6 +47,7 @@ Keys:
 - Confirmation modal before install, update, or uninstall actions run
 - Setup prompt for Windows systems where Scoop is not detected
 - Help modal with grouped key bindings
+- Mouse support for package selection, search mode, modal actions, footer actions, scrolling, and homepage links
 - Production backend selected on Windows
 - Mock backend with sample Scoop packages and buckets for tests and non-Windows development
 - Scoop environment discovery for `SCOOP`, `SCOOP_GLOBAL`, bucket paths, app paths, and cache paths
