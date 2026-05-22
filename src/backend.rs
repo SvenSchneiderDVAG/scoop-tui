@@ -178,11 +178,7 @@ fn scoop_process(executable: Option<&Path>, args: &[&str]) -> Command {
 }
 
 fn shell_scoop_command(args: &[&str]) -> Command {
-    let mut command = Command::new("cmd.exe");
-    command
-        .args(["/D", "/C"])
-        .arg(cmd_script(Path::new("scoop"), args));
-    command
+    powershell_command("scoop", args)
 }
 
 fn shell_scoop_lookup_command() -> Command {
@@ -197,24 +193,10 @@ fn scoop_command(executable: &Path, args: &[&str]) -> Command {
         .and_then(|extension| extension.to_str())
     {
         Some(extension) if extension.eq_ignore_ascii_case("cmd") => {
-            let mut command = Command::new("cmd.exe");
-            command.args(["/D", "/C"]).arg(cmd_script(executable, args));
-            command
+            powershell_command(&executable.to_string_lossy(), args)
         }
         Some(extension) if extension.eq_ignore_ascii_case("ps1") => {
-            let mut command = Command::new("powershell");
-            let script = powershell_script(&format!(
-                "& {} {}",
-                quote_powershell_argument(&executable.to_string_lossy()),
-                args.iter()
-                    .map(|argument| quote_powershell_argument(argument))
-                    .collect::<Vec<_>>()
-                    .join(" ")
-            ));
-            command
-                .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command"])
-                .arg(script);
-            command
+            powershell_command(&executable.to_string_lossy(), args)
         }
         _ => {
             let mut command = Command::new(executable);
@@ -230,23 +212,22 @@ fn powershell_script(script: &str) -> String {
     )
 }
 
-fn cmd_script(executable: &Path, args: &[&str]) -> String {
-    let quoted_executable = quote_cmd_argument(&executable.to_string_lossy());
+fn powershell_command(executable: &str, args: &[&str]) -> Command {
+    let mut command = Command::new("powershell");
     let quoted_args = args
         .iter()
-        .map(|argument| quote_cmd_argument(argument))
+        .map(|argument| quote_powershell_argument(argument))
         .collect::<Vec<_>>()
         .join(" ");
-
-    if quoted_args.is_empty() {
-        format!("chcp 65001 >NUL && {quoted_executable}")
+    let script = if quoted_args.is_empty() {
+        format!("& {}", quote_powershell_argument(executable))
     } else {
-        format!("chcp 65001 >NUL && {quoted_executable} {quoted_args}")
-    }
-}
-
-fn quote_cmd_argument(argument: &str) -> String {
-    format!("\"{}\"", argument.replace('"', "\\\""))
+        format!("& {} {quoted_args}", quote_powershell_argument(executable))
+    };
+    command
+        .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command"])
+        .arg(powershell_script(&script));
+    command
 }
 
 fn quote_powershell_argument(argument: &str) -> String {
@@ -451,18 +432,20 @@ mod tests {
     fn wraps_cmd_shims_with_cmd_exe() {
         let shim = PathBuf::from(r"C:\Users\diz\scoop\shims\scoop.cmd");
 
-        let command = scoop_command(&shim, &["--version"]);
+        let command = scoop_command(&shim, &["search"]);
 
-        assert_eq!(command.get_program(), "cmd.exe");
+        assert_eq!(command.get_program(), "powershell");
         assert_eq!(
             command
                 .get_args()
                 .map(|argument| argument.to_string_lossy().to_string())
                 .collect::<Vec<_>>(),
             vec![
-                "/D",
-                "/C",
-                r#"chcp 65001 >NUL && "C:\Users\diz\scoop\shims\scoop.cmd" "--version""#
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; $OutputEncoding = [System.Text.Encoding]::UTF8; & 'C:\\Users\\diz\\scoop\\shims\\scoop.cmd' 'search'"
             ]
         );
     }
@@ -471,13 +454,19 @@ mod tests {
     fn falls_back_to_cmd_shell_resolution_when_no_shim_path_was_found() {
         let command = scoop_process(None, &["--version"]);
 
-        assert_eq!(command.get_program(), "cmd.exe");
+        assert_eq!(command.get_program(), "powershell");
         assert_eq!(
             command
                 .get_args()
                 .map(|argument| argument.to_string_lossy().to_string())
                 .collect::<Vec<_>>(),
-            vec!["/D", "/C", r#"chcp 65001 >NUL && "scoop" "--version""#]
+            vec![
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; $OutputEncoding = [System.Text.Encoding]::UTF8; & 'scoop' '--version'"
+            ]
         );
     }
 
