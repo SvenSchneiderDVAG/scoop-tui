@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 use crossterm::cursor::{DisableBlinking, EnableBlinking};
 use crossterm::event::{
-    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind,
+    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
 };
 use crossterm::execute;
 use crossterm::terminal::{
@@ -97,12 +97,44 @@ fn run<B: ScoopBackend + Clone + Send + 'static>(
                     continue;
                 }
 
+                let size = terminal.size()?;
+                let area = Rect::new(0, 0, size.width, size.height);
+                let layout = scoop_tui::ui::layout_for(area);
+                let page_rows = usize::from(layout.packages.height.saturating_sub(3)).max(1);
+                let log_rows = usize::from(layout.terminal.height.saturating_sub(2)).max(1);
+                let help_rows = usize::from(layout.help_modal.height.saturating_sub(4)).max(1);
+
                 if app.show_help {
                     match key.code {
                         KeyCode::Char('?') | KeyCode::Char('q') | KeyCode::Esc => app.close_help(),
+                        KeyCode::Down | KeyCode::Char('j') => app.scroll_help_down(),
+                        KeyCode::Up | KeyCode::Char('k') => app.scroll_help_up(),
+                        KeyCode::PageDown => app.scroll_help_page_down(help_rows),
+                        KeyCode::PageUp => app.scroll_help_page_up(help_rows),
+                        KeyCode::Home | KeyCode::Char('g') => app.scroll_help_to_top(),
                         _ => {}
                     }
                     continue;
+                }
+
+                match key.code {
+                    KeyCode::PageUp if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                        app.scroll_output_page_up(log_rows);
+                        continue;
+                    }
+                    KeyCode::PageDown if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                        app.scroll_output_page_down(log_rows);
+                        continue;
+                    }
+                    KeyCode::Home if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                        app.scroll_output_to_top();
+                        continue;
+                    }
+                    KeyCode::End if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                        app.scroll_output_to_bottom();
+                        continue;
+                    }
+                    _ => {}
                 }
 
                 if app.activity.is_active() {
@@ -132,6 +164,8 @@ fn run<B: ScoopBackend + Clone + Send + 'static>(
                         KeyCode::Char('?') => app.open_help(),
                         KeyCode::Char('/') => app.start_search(),
                         KeyCode::Char('c') => app.clear_search(),
+                        KeyCode::Char('g') => app.move_first(),
+                        KeyCode::Char('G') => app.move_last(),
                         KeyCode::Char('s') => start_search_command(app, &backend, &completion_tx),
                         KeyCode::Char('l') => {
                             start_toggle_installed_command(app, &backend, &completion_tx)
@@ -147,6 +181,10 @@ fn run<B: ScoopBackend + Clone + Send + 'static>(
                         }
                         KeyCode::Down | KeyCode::Char('j') => app.move_down(),
                         KeyCode::Up | KeyCode::Char('k') => app.move_up(),
+                        KeyCode::PageDown => app.move_page_down(page_rows),
+                        KeyCode::PageUp => app.move_page_up(page_rows),
+                        KeyCode::Home => app.move_first(),
+                        KeyCode::End => app.move_last(),
                         _ => {}
                     },
                     InputMode::Search => match key.code {

@@ -321,16 +321,16 @@ fn quote_powershell_argument(argument: &str) -> String {
 
 fn scoop_executable_candidates(environment: &ScoopEnvironment) -> Vec<PathBuf> {
     let mut candidates = vec![
-        environment.user_root.join("shims").join("scoop.cmd"),
-        environment.global_root.join("shims").join("scoop.cmd"),
         environment.user_root.join("shims").join("scoop.ps1"),
         environment.global_root.join("shims").join("scoop.ps1"),
+        environment.user_root.join("shims").join("scoop.cmd"),
+        environment.global_root.join("shims").join("scoop.cmd"),
     ];
 
     if let Some(paths) = env::var_os("PATH") {
         for path in env::split_paths(&paths) {
-            candidates.push(path.join("scoop.cmd"));
             candidates.push(path.join("scoop.ps1"));
+            candidates.push(path.join("scoop.cmd"));
             candidates.push(path.join("scoop.exe"));
         }
     }
@@ -628,6 +628,26 @@ mod tests {
         };
 
         assert_eq!(find_scoop_executable(&environment), Some(shim));
+
+        fs::remove_dir_all(user_root).expect("remove temp user root");
+    }
+
+    #[test]
+    fn prefers_scoop_ps1_to_avoid_cmd_shim_windows() {
+        let user_root = temp_scoop_root("user");
+        let shim_dir = user_root.join("shims");
+        fs::create_dir_all(&shim_dir).expect("create shim dir");
+        let cmd_shim = shim_dir.join("scoop.cmd");
+        let ps1_shim = shim_dir.join("scoop.ps1");
+        fs::write(&cmd_shim, "@echo off").expect("write scoop cmd shim");
+        fs::write(&ps1_shim, "Write-Output scoop").expect("write scoop ps1 shim");
+
+        let environment = ScoopEnvironment {
+            user_root: user_root.clone(),
+            global_root: temp_scoop_root("global"),
+        };
+
+        assert_eq!(find_scoop_executable(&environment), Some(ps1_shim));
 
         fs::remove_dir_all(user_root).expect("remove temp user root");
     }

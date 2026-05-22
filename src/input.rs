@@ -59,13 +59,35 @@ pub fn handle_mouse_event_with_browser<B: ScoopBackend, O: BrowserOpener>(
     area: Rect,
     event: MouseEvent,
 ) -> MouseOutcome {
+    if app.show_help {
+        match event.kind {
+            MouseEventKind::ScrollUp => app.scroll_help_up(),
+            MouseEventKind::ScrollDown => app.scroll_help_down(),
+            MouseEventKind::Down(MouseButton::Left) => {
+                handle_left_click(app, backend, browser, area, event);
+            }
+            _ => {}
+        }
+        return MouseOutcome::Continue;
+    }
+
     match event.kind {
         MouseEventKind::ScrollUp => {
-            app.move_up();
+            let layout = layout_for(area);
+            if contains(layout.terminal, event.column, event.row) {
+                app.scroll_output_up();
+            } else {
+                app.move_up();
+            }
             MouseOutcome::Continue
         }
         MouseEventKind::ScrollDown => {
-            app.move_down();
+            let layout = layout_for(area);
+            if contains(layout.terminal, event.column, event.row) {
+                app.scroll_output_down();
+            } else {
+                app.move_down();
+            }
             MouseOutcome::Continue
         }
         MouseEventKind::Down(MouseButton::Left) => {
@@ -87,8 +109,13 @@ fn handle_left_click<B: ScoopBackend, O: BrowserOpener>(
     let row = event.row;
 
     if app.show_help {
-        if contains(layout.help_modal, column, row) {
-            app.close_help();
+        match event.kind {
+            MouseEventKind::ScrollUp => app.scroll_help_up(),
+            MouseEventKind::ScrollDown => app.scroll_help_down(),
+            MouseEventKind::Down(MouseButton::Left) if contains(layout.help_modal, column, row) => {
+                app.close_help();
+            }
+            _ => {}
         }
         return MouseOutcome::Continue;
     }
@@ -379,6 +406,42 @@ mod tests {
             mouse_event(MouseEventKind::ScrollDown, 4, 8),
         );
         assert_eq!(app.selected_index(), 1);
+    }
+
+    #[test]
+    fn scroll_wheel_over_terminal_scrolls_output_instead_of_selection() {
+        let backend = MockBackend;
+        let mut app = App::new(backend.packages());
+        app.output = (0..20).map(|index| format!("line-{index:02}")).collect();
+        let area = Rect::new(0, 0, 120, 32);
+
+        super::handle_mouse_event(
+            &mut app,
+            &backend,
+            area,
+            mouse_event(MouseEventKind::ScrollUp, 100, 24),
+        );
+
+        assert_eq!(app.selected_index(), 0);
+        assert_eq!(app.output_scroll, 1);
+    }
+
+    #[test]
+    fn scroll_wheel_scrolls_help_when_help_is_open() {
+        let backend = MockBackend;
+        let mut app = App::new(backend.packages());
+        app.open_help();
+        let area = Rect::new(0, 0, 120, 32);
+
+        super::handle_mouse_event(
+            &mut app,
+            &backend,
+            area,
+            mouse_event(MouseEventKind::ScrollDown, 60, 18),
+        );
+
+        assert_eq!(app.help_scroll, 1);
+        assert_eq!(app.selected_index(), 0);
     }
 
     #[test]

@@ -12,6 +12,7 @@ pub struct AppLayout {
     pub body: Rect,
     pub packages: Rect,
     pub details: Rect,
+    pub terminal: Rect,
     pub footer: Rect,
     pub confirmation_modal: Rect,
     pub setup_modal: Rect,
@@ -41,6 +42,7 @@ pub fn layout_for(area: Rect) -> AppLayout {
         body: root[1],
         packages: body[0],
         details: side_panel[0],
+        terminal: side_panel[1],
         footer: root[2],
         confirmation_modal: centered_rect(48, 24, area),
         setup_modal: centered_rect(74, 34, area),
@@ -234,7 +236,8 @@ fn draw_side_panel(frame: &mut Frame<'_>, area: Rect, app: &App) {
     };
     let output_line_count = output.lines().count() as u16;
     let visible_output_lines = sections[1].height.saturating_sub(2);
-    let output_scroll = output_line_count.saturating_sub(visible_output_lines);
+    let max_scroll = output_line_count.saturating_sub(visible_output_lines);
+    let output_scroll = max_scroll.saturating_sub(app.output_scroll as u16);
     let terminal_title = if app.activity.is_active() {
         format!("Terminal - {}", app.activity_label())
     } else {
@@ -264,7 +267,7 @@ pub(crate) fn footer_text_for_width(input_mode: crate::app::InputMode, width: u1
         crate::app::InputMode::Search => "Search",
     };
     let full = format!(
-        "[{}]  [↑/↓] Navigate  [/] Filter  [s] Search Apps  [l] Toggle Installed  [i] Install  [r] Uninstall  [u] Update  [?] Help  [q] Quit",
+        "[{}]  [↑/↓ PgUp/PgDn Home/End g/G] Navigate  [Shift+Pg/Home/End] Log  [/] Filter  [s] Search Apps  [l] Toggle Installed  [i] Install  [r] Uninstall  [u] Update  [?] Help  [q] Quit",
         mode
     );
     if full.chars().count() <= usize::from(width) {
@@ -344,7 +347,10 @@ fn draw_help_modal(frame: &mut Frame<'_>, app: &App) {
         .padding(Padding::new(1, 1, 0, 0));
     let inner = block.inner(area);
 
-    let rows = help_rows().into_iter().map(|row| match row {
+    let help_rows = help_rows();
+    let max_offset = help_rows.len().saturating_sub(usize::from(inner.height));
+    let offset = app.help_scroll.min(max_offset);
+    let rows = help_rows.into_iter().map(|row| match row {
         HelpRow::Section(title) => Row::new(vec![
             Cell::from(title).style(Style::default().fg(Color::Yellow)),
             Cell::from(""),
@@ -359,9 +365,10 @@ fn draw_help_modal(frame: &mut Frame<'_>, app: &App) {
     let table = Table::new(rows, [Constraint::Length(18), Constraint::Min(24)])
         .column_spacing(2)
         .style(Style::default().fg(Color::White).bg(Color::Black));
+    let mut state = TableState::default().with_offset(offset);
     frame.render_widget(Clear, area);
     frame.render_widget(block, area);
-    frame.render_widget(table, inner);
+    frame.render_stateful_widget(table, inner, &mut state);
 }
 
 enum HelpRow {
@@ -379,6 +386,26 @@ fn help_rows() -> Vec<HelpRow> {
         HelpRow::Binding {
             keys: "[↑/↓] or [k/j]",
             description: "Move package selection",
+        },
+        HelpRow::Binding {
+            keys: "[PgUp/PgDn]",
+            description: "Move package selection by page",
+        },
+        HelpRow::Binding {
+            keys: "[Home/End]",
+            description: "Jump to first/last package",
+        },
+        HelpRow::Binding {
+            keys: "[g/G]",
+            description: "Jump to first/last package",
+        },
+        HelpRow::Binding {
+            keys: "[Shift+PgUp/PgDn]",
+            description: "Scroll terminal output by page",
+        },
+        HelpRow::Binding {
+            keys: "[Shift+Home/End]",
+            description: "Jump terminal output top/bottom",
         },
         HelpRow::Spacer,
         HelpRow::Section("Views"),
@@ -606,6 +633,24 @@ mod tests {
 
         assert!(rendered.contains("Help"));
         assert!(rendered.contains("Navigation"));
+        assert!(rendered.contains("[PgUp/PgDn]"));
+        assert!(rendered.contains("[Shift+PgUp/PgDn]"));
+        assert!(rendered.contains("[g/G]"));
+        assert!(!rendered.contains("Uninstall selected package"));
+
+        app.scroll_help_page_down(12);
+        terminal
+            .draw(|frame| draw(frame, &app))
+            .expect("render scrolled frame");
+
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+
         assert!(rendered.contains("Package Actions"));
         assert!(rendered.contains("[i]"));
         assert!(rendered.contains("Install selected package"));
@@ -663,6 +708,33 @@ mod tests {
 
         assert!(rendered.contains("line-39"));
         assert!(!rendered.contains("line-00"));
+    }
+
+    #[test]
+    fn terminal_panel_can_scroll_back_through_output_history() {
+        let backend = MockBackend;
+        let mut app = App::new(backend.packages());
+        app.output = (0..40).map(|index| format!("line-{index:02}")).collect();
+        for _ in 0..40 {
+            app.scroll_output_up();
+        }
+        let backend = TestBackend::new(120, 24);
+        let mut terminal = Terminal::new(backend).expect("test terminal");
+
+        terminal
+            .draw(|frame| draw(frame, &app))
+            .expect("render frame");
+
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+
+        assert!(rendered.contains("line-00"));
+        assert!(!rendered.contains("line-39"));
     }
 
     #[test]

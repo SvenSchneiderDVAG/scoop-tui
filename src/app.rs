@@ -108,7 +108,9 @@ pub struct App {
     pub pending_action: Option<PendingAction>,
     pub setup_prompt: Option<SetupPrompt>,
     pub show_help: bool,
+    pub help_scroll: usize,
     pub activity: Activity,
+    pub output_scroll: usize,
     spinner_index: usize,
     package_cache: PackageCache,
     installed_packages: Vec<Package>,
@@ -126,7 +128,9 @@ impl App {
             pending_action: None,
             setup_prompt: None,
             show_help: false,
+            help_scroll: 0,
             activity: Activity::Idle,
+            output_scroll: 0,
             spinner_index: 0,
             package_cache: PackageCache::new(DEFAULT_PACKAGE_CACHE_TTL),
             installed_packages: Vec::new(),
@@ -177,6 +181,28 @@ impl App {
 
     pub fn move_up(&mut self) {
         self.selected = self.selected.saturating_sub(1);
+    }
+
+    pub fn move_page_down(&mut self, rows: usize) {
+        let len = self.filtered_indices().len();
+        if len > 0 {
+            self.selected = self.selected.saturating_add(rows.max(1)).min(len - 1);
+        }
+    }
+
+    pub fn move_page_up(&mut self, rows: usize) {
+        self.selected = self.selected.saturating_sub(rows.max(1));
+    }
+
+    pub fn move_first(&mut self) {
+        self.selected = 0;
+    }
+
+    pub fn move_last(&mut self) {
+        let len = self.filtered_indices().len();
+        if len > 0 {
+            self.selected = len - 1;
+        }
     }
 
     pub fn filtered_packages(&self) -> Vec<&Package> {
@@ -232,6 +258,7 @@ impl App {
 
     pub fn open_help(&mut self) {
         self.show_help = true;
+        self.help_scroll = 0;
     }
 
     pub fn close_help(&mut self) {
@@ -240,6 +267,9 @@ impl App {
 
     pub fn toggle_help(&mut self) {
         self.show_help = !self.show_help;
+        if self.show_help {
+            self.help_scroll = 0;
+        }
     }
 
     pub fn confirm_pending_action<B: ScoopBackend>(
@@ -405,6 +435,56 @@ impl App {
         }
     }
 
+    pub fn scroll_output_up(&mut self) {
+        self.output_scroll = self
+            .output_scroll
+            .saturating_add(1)
+            .min(self.output.len().saturating_sub(1));
+    }
+
+    pub fn scroll_output_down(&mut self) {
+        self.output_scroll = self.output_scroll.saturating_sub(1);
+    }
+
+    pub fn scroll_output_page_up(&mut self, rows: usize) {
+        self.output_scroll = self
+            .output_scroll
+            .saturating_add(rows.max(1))
+            .min(self.output.len().saturating_sub(1));
+    }
+
+    pub fn scroll_output_page_down(&mut self, rows: usize) {
+        self.output_scroll = self.output_scroll.saturating_sub(rows.max(1));
+    }
+
+    pub fn scroll_output_to_top(&mut self) {
+        self.output_scroll = self.output.len().saturating_sub(1);
+    }
+
+    pub fn scroll_output_to_bottom(&mut self) {
+        self.output_scroll = 0;
+    }
+
+    pub fn scroll_help_up(&mut self) {
+        self.help_scroll = self.help_scroll.saturating_sub(1);
+    }
+
+    pub fn scroll_help_down(&mut self) {
+        self.help_scroll = self.help_scroll.saturating_add(1);
+    }
+
+    pub fn scroll_help_page_up(&mut self, rows: usize) {
+        self.help_scroll = self.help_scroll.saturating_sub(rows.max(1));
+    }
+
+    pub fn scroll_help_page_down(&mut self, rows: usize) {
+        self.help_scroll = self.help_scroll.saturating_add(rows.max(1));
+    }
+
+    pub fn scroll_help_to_top(&mut self) {
+        self.help_scroll = 0;
+    }
+
     fn filtered_indices(&self) -> Vec<usize> {
         let query = self.search_query.trim().to_lowercase();
         if query.is_empty() {
@@ -442,6 +522,7 @@ impl App {
             let overflow = self.output.len() - MAX_OUTPUT_LINES;
             self.output.drain(0..overflow);
         }
+        self.scroll_output_to_bottom();
     }
 
     fn restore_selection_by_name(&mut self, name: Option<&str>) {
@@ -968,6 +1049,68 @@ mod tests {
         app.tick();
 
         assert_ne!(app.spinner_frame(), first);
+    }
+
+    #[test]
+    fn page_and_edge_navigation_move_selected_package() {
+        let mut app = App::new(
+            (0..20)
+                .map(|index| Package {
+                    source: "main".to_string(),
+                    name: format!("pkg-{index:02}"),
+                    version: "1.0.0".to_string(),
+                    latest_version: None,
+                    description: String::new(),
+                    installed: false,
+                    homepage: None,
+                })
+                .collect(),
+        );
+
+        app.move_page_down(8);
+        assert_eq!(app.selected_index(), 8);
+
+        app.move_last();
+        assert_eq!(app.selected_index(), 19);
+
+        app.move_page_up(8);
+        assert_eq!(app.selected_index(), 11);
+
+        app.move_first();
+        assert_eq!(app.selected_index(), 0);
+    }
+
+    #[test]
+    fn page_and_edge_navigation_scroll_output_history() {
+        let mut app = App::new(packages());
+        app.output = (0..20).map(|index| format!("line-{index:02}")).collect();
+
+        app.scroll_output_page_up(8);
+        assert_eq!(app.output_scroll, 8);
+
+        app.scroll_output_to_top();
+        assert_eq!(app.output_scroll, 19);
+
+        app.scroll_output_page_down(8);
+        assert_eq!(app.output_scroll, 11);
+
+        app.scroll_output_to_bottom();
+        assert_eq!(app.output_scroll, 0);
+    }
+
+    #[test]
+    fn help_scroll_tracks_help_modal_offset() {
+        let mut app = App::new(packages());
+        app.open_help();
+
+        app.scroll_help_page_down(8);
+        assert_eq!(app.help_scroll, 8);
+
+        app.scroll_help_up();
+        assert_eq!(app.help_scroll, 7);
+
+        app.scroll_help_page_up(8);
+        assert_eq!(app.help_scroll, 0);
     }
 
     #[test]

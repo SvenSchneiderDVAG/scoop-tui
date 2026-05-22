@@ -17,6 +17,10 @@ Keys:
 - `/` enter search mode
 - `Esc` or `Enter` leave search mode
 - `Up`/`Down` or `k`/`j` move selection
+- `PageUp`/`PageDown` move package selection by page
+- `Home`/`End` or `g`/`G` jump to the first/last package
+- `Shift+PageUp`/`Shift+PageDown` scroll terminal output by page
+- `Shift+Home`/`Shift+End` jump terminal output to top/bottom
 - `i` install selected package
 - `u` update selected package
 - `r` uninstall selected package
@@ -25,12 +29,14 @@ Keys:
 - `s` load package search results
 - `l` toggle installed/search view
 - `c` clear search
-- `?` open or close help
+- `?` open or close help; help can be scrolled with `Up`/`Down`, `k`/`j`, `PageUp`/`PageDown`, or `g`
 - `q` quit
 
 Mouse:
 
 - Scroll wheel moves package selection
+- Scroll wheel over the terminal panel scrolls command output
+- Scroll wheel over the help modal scrolls help content
 - Click a package row to select it
 - Click the search field to enter search mode
 - Click modal confirm/cancel actions
@@ -43,14 +49,16 @@ Mouse:
 - Search/filter state
 - Details panel for the selected package
 - Integrated terminal panel showing confirmed command output
-- Header and terminal activity indicators with spinner-ready state
+- Scrollable terminal output panel
+- Header and terminal activity indicators with animated spinner state while commands run
 - Confirmation modal before install, update, or uninstall actions run
 - Setup prompt for Windows systems where Scoop is not detected
-- Help modal with grouped key bindings
-- Mouse support for package selection, search mode, modal actions, footer actions, scrolling, and homepage links
+- Scrollable help modal with grouped key bindings
+- Mouse support for package selection, terminal/help scrolling, search mode, modal actions, footer actions, and homepage links
 - Production backend selected on Windows
 - Sample Scoop packages and buckets for tests and non-Windows development
 - Scoop environment discovery for `SCOOP`, `SCOOP_GLOBAL`, bucket paths, app paths, and cache paths
+- Scoop command discovery prefers PowerShell shims on Windows to avoid extra visible command windows where possible
 - Short-lived package search cache so returning to recent searches does not rerun the backend or duplicate output
 
 ## License
