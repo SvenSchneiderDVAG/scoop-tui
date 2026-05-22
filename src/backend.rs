@@ -82,7 +82,11 @@ impl ProductionBackend {
 
 impl ScoopBackend for ProductionBackend {
     fn is_scoop_available(&self) -> bool {
-        let mut process = scoop_process(self.scoop_executable().as_deref(), &["--version"]);
+        if self.scoop_executable().is_some() {
+            return true;
+        }
+
+        let mut process = shell_scoop_lookup_command();
 
         process
             .output()
@@ -178,6 +182,12 @@ fn shell_scoop_command(args: &[&str]) -> Command {
     command
         .args(["/D", "/C"])
         .arg(cmd_script(Path::new("scoop"), args));
+    command
+}
+
+fn shell_scoop_lookup_command() -> Command {
+    let mut command = Command::new("cmd.exe");
+    command.args(["/D", "/C", "where scoop >NUL 2>NUL"]);
     command
 }
 
@@ -468,6 +478,20 @@ mod tests {
                 .map(|argument| argument.to_string_lossy().to_string())
                 .collect::<Vec<_>>(),
             vec!["/D", "/C", r#"chcp 65001 >NUL && "scoop" "--version""#]
+        );
+    }
+
+    #[test]
+    fn availability_uses_shell_lookup_instead_of_version_command() {
+        let command = shell_scoop_lookup_command();
+
+        assert_eq!(command.get_program(), "cmd.exe");
+        assert_eq!(
+            command
+                .get_args()
+                .map(|argument| argument.to_string_lossy().to_string())
+                .collect::<Vec<_>>(),
+            vec!["/D", "/C", "where scoop >NUL 2>NUL"]
         );
     }
 
