@@ -185,11 +185,7 @@ fn scoop_process(executable: Option<&Path>, args: &[&str]) -> Command {
 }
 
 fn shell_scoop_command(args: &[&str]) -> Command {
-    let mut command = Command::new("cmd.exe");
-    command
-        .args(["/D", "/C"])
-        .arg(cmd_script(Path::new("scoop"), args));
-    command
+    cmd_command(&cmd_script(Path::new("scoop"), args))
 }
 
 fn shell_scoop_lookup_command() -> Command {
@@ -204,9 +200,7 @@ fn scoop_command(executable: &Path, args: &[&str]) -> Command {
         .and_then(|extension| extension.to_str())
     {
         Some(extension) if extension.eq_ignore_ascii_case("cmd") => {
-            let mut command = Command::new("cmd.exe");
-            command.args(["/D", "/C"]).arg(cmd_script(executable, args));
-            command
+            cmd_command(&cmd_script(executable, args))
         }
         Some(extension) if extension.eq_ignore_ascii_case("ps1") => {
             powershell_command(&executable.to_string_lossy(), args)
@@ -223,6 +217,25 @@ fn powershell_script(script: &str) -> String {
     format!(
         "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; $OutputEncoding = [System.Text.Encoding]::UTF8; {script}"
     )
+}
+
+fn cmd_command(script: &str) -> Command {
+    let mut command = Command::new("cmd.exe");
+    command.args(["/D", "/C"]);
+    push_cmd_script_arg(&mut command, script);
+    command
+}
+
+#[cfg(target_os = "windows")]
+fn push_cmd_script_arg(command: &mut Command, script: &str) {
+    use std::os::windows::process::CommandExt;
+
+    command.raw_arg(script);
+}
+
+#[cfg(not(target_os = "windows"))]
+fn push_cmd_script_arg(command: &mut Command, script: &str) {
+    command.arg(script);
 }
 
 fn cmd_script(executable: &Path, args: &[&str]) -> String {
@@ -304,6 +317,8 @@ fn parse_scoop_list_line(line: &str) -> Option<Package> {
         || line.starts_with("Installed apps")
         || line.starts_with("Name ")
         || line.starts_with("----")
+        || line.starts_with("Der Befehl")
+        || line.contains("konnte nicht gefunden werden")
     {
         return None;
     }
@@ -315,6 +330,9 @@ fn parse_scoop_list_line(line: &str) -> Option<Package> {
 
     let name = columns.first()?.to_string();
     let version = columns.get(1)?.to_string();
+    if !version.chars().any(|character| character.is_ascii_digit()) {
+        return None;
+    }
     let source = columns.get(2)?.to_string();
 
     Some(Package {
@@ -604,6 +622,15 @@ zim       0.76.3   extras 2026-05-20 18:31:00
                 },
             ]
         );
+    }
+
+    #[test]
+    fn ignores_localized_command_errors_when_parsing_scoop_list() {
+        let output = r#"Der Befehl "\"C:\Users\diz\scoop\shims\scoop.cmd\"" ist entweder
+falsch geschrieben oder
+konnte nicht gefunden werden."#;
+
+        assert!(parse_scoop_list_packages(output).is_empty());
     }
 
     #[test]

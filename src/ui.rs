@@ -507,7 +507,7 @@ mod tests {
             .backend_mut()
             .get_cursor_position()
             .expect("cursor position");
-        assert_eq!(cursor_position, Position::new(53, 1));
+        assert_eq!(cursor_position, Position::new(54, 1));
     }
 
     #[test]

@@ -27,9 +27,12 @@ fn main() -> Result<()> {
     #[cfg(not(target_os = "windows"))]
     let backend = MockBackend;
 
-    let mut app = App::new(backend.packages());
+    let mut app = App::new(Vec::new());
     let browser = SystemBrowser;
     app.check_scoop_available(&backend);
+    if app.setup_prompt.is_none() {
+        app.show_installed_view(&backend);
+    }
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(
