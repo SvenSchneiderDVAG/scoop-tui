@@ -136,15 +136,16 @@ impl ScoopBackend for ProductionBackend {
     fn install_scoop(&self) -> CommandResult {
         let command = SCOOP_INSTALL_COMMAND.to_string();
         let script = powershell_script(&command);
-        let output = Command::new("powershell")
-            .args([
-                "-NoProfile",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-Command",
-                &script,
-            ])
-            .output();
+        let mut process = Command::new("powershell");
+        process.args([
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            &script,
+        ]);
+        hide_child_window(&mut process);
+        let output = process.output();
 
         match output {
             Ok(output) => {
@@ -207,6 +208,7 @@ fn shell_scoop_command(args: &[&str]) -> Command {
 fn shell_scoop_lookup_command() -> Command {
     let mut command = Command::new("cmd.exe");
     command.args(["/D", "/C", "where scoop >NUL 2>NUL"]);
+    hide_child_window(&mut command);
     command
 }
 
@@ -224,6 +226,7 @@ fn scoop_command(executable: &Path, args: &[&str]) -> Command {
         _ => {
             let mut command = Command::new(executable);
             command.args(args);
+            hide_child_window(&mut command);
             command
         }
     }
@@ -239,6 +242,7 @@ fn cmd_command(script: &str) -> Command {
     let mut command = Command::new("cmd.exe");
     command.args(["/D", "/C"]);
     push_cmd_script_arg(&mut command, script);
+    hide_child_window(&mut command);
     command
 }
 
@@ -296,8 +300,20 @@ fn powershell_command(executable: &str, args: &[&str]) -> Command {
     command
         .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command"])
         .arg(powershell_script(&script));
+    hide_child_window(&mut command);
     command
 }
+
+#[cfg(target_os = "windows")]
+fn hide_child_window(command: &mut Command) {
+    use std::os::windows::process::CommandExt;
+
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+    command.creation_flags(CREATE_NO_WINDOW);
+}
+
+#[cfg(not(target_os = "windows"))]
+fn hide_child_window(_command: &mut Command) {}
 
 fn quote_powershell_argument(argument: &str) -> String {
     format!("'{}'", argument.replace('\'', "''"))
@@ -422,7 +438,7 @@ fn merge_latest_versions(
         .collect()
 }
 
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 #[cfg(any(test, not(target_os = "windows")))]
 pub struct MockBackend;
 

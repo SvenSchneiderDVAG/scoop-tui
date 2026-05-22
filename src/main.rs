@@ -1,5 +1,7 @@
 use std::io;
-use std::time::Duration;
+use std::sync::mpsc::{self, Receiver, Sender};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use crossterm::cursor::{DisableBlinking, EnableBlinking};
@@ -13,12 +15,12 @@ use crossterm::terminal::{
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::Rect;
 use ratatui::Terminal;
-use scoop_tui::app::{App, InputMode};
+use scoop_tui::app::{App, InputMode, PackageAction, PendingAction};
 #[cfg(not(target_os = "windows"))]
 use scoop_tui::backend::MockBackend;
 #[cfg(target_os = "windows")]
 use scoop_tui::backend::ProductionBackend;
-use scoop_tui::backend::ScoopBackend;
+use scoop_tui::backend::{CommandResult, ScoopBackend};
 use scoop_tui::input::SystemBrowser;
 
 fn main() -> Result<()> {
@@ -45,7 +47,7 @@ fn main() -> Result<()> {
         app.show_installed_view(&backend);
     }
 
-    let result = run(&mut terminal, &mut app, &backend, &browser);
+    let result = run(&mut terminal, &mut app, backend, &browser);
 
     disable_raw_mode()?;
     execute!(
@@ -59,13 +61,29 @@ fn main() -> Result<()> {
     result
 }
 
-fn run<B: ScoopBackend>(
+enum BackgroundCompletion {
+    Setup(CommandResult),
+    Search {
+        result: CommandResult,
+        requested_at: Instant,
+    },
+    Installed(CommandResult),
+    PackageAction {
+        result: CommandResult,
+        installed_result: CommandResult,
+    },
+}
+
+fn run<B: ScoopBackend + Clone + Send + 'static>(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     app: &mut App,
-    backend: &B,
+    backend: B,
     browser: &SystemBrowser,
 ) -> Result<()> {
+    let (completion_tx, completion_rx) = mpsc::channel();
+
     loop {
+        apply_background_completions(app, &completion_rx);
         app.tick();
         terminal.draw(|frame| scoop_tui::ui::draw(frame, app))?;
 
@@ -87,10 +105,14 @@ fn run<B: ScoopBackend>(
                     continue;
                 }
 
+                if app.activity.is_active() {
+                    continue;
+                }
+
                 if app.setup_prompt.is_some() {
                     match key.code {
                         KeyCode::Char('y') => {
-                            app.confirm_setup_prompt(backend);
+                            start_setup_command(app, &backend, &completion_tx);
                         }
                         KeyCode::Char('n') | KeyCode::Esc => app.cancel_setup_prompt(),
                         _ => {}
@@ -101,7 +123,7 @@ fn run<B: ScoopBackend>(
                 match app.input_mode {
                     InputMode::Browse => match key.code {
                         KeyCode::Char('y') if app.pending_action.is_some() => {
-                            app.confirm_pending_action(backend);
+                            start_pending_action(app, &backend, &completion_tx);
                         }
                         KeyCode::Char('n') | KeyCode::Esc if app.pending_action.is_some() => {
                             app.cancel_pending_action();
@@ -110,8 +132,10 @@ fn run<B: ScoopBackend>(
                         KeyCode::Char('?') => app.open_help(),
                         KeyCode::Char('/') => app.start_search(),
                         KeyCode::Char('c') => app.clear_search(),
-                        KeyCode::Char('s') => app.load_search_results(backend),
-                        KeyCode::Char('l') => app.toggle_installed_view(backend),
+                        KeyCode::Char('s') => start_search_command(app, &backend, &completion_tx),
+                        KeyCode::Char('l') => {
+                            start_toggle_installed_command(app, &backend, &completion_tx)
+                        }
                         KeyCode::Char('i') => {
                             app.request_install_selected();
                         }
@@ -135,10 +159,14 @@ fn run<B: ScoopBackend>(
                 }
             }
             Event::Mouse(mouse) => {
+                if app.activity.is_active() {
+                    continue;
+                }
+
                 let size = terminal.size()?;
                 let area = Rect::new(0, 0, size.width, size.height);
                 if scoop_tui::input::handle_mouse_event_with_browser(
-                    app, backend, browser, area, mouse,
+                    app, &backend, browser, area, mouse,
                 ) == scoop_tui::input::MouseOutcome::Quit
                 {
                     break;
@@ -149,4 +177,107 @@ fn run<B: ScoopBackend>(
     }
 
     Ok(())
+}
+
+fn apply_background_completions(app: &mut App, completion_rx: &Receiver<BackgroundCompletion>) {
+    while let Ok(completion) = completion_rx.try_recv() {
+        match completion {
+            BackgroundCompletion::Setup(result) => app.finish_setup_prompt(result),
+            BackgroundCompletion::Search {
+                result,
+                requested_at,
+            } => app.finish_search_results_at(result, requested_at),
+            BackgroundCompletion::Installed(result) => app.finish_installed_view(result),
+            BackgroundCompletion::PackageAction {
+                result,
+                installed_result,
+            } => app.finish_pending_action(result, installed_result),
+        }
+    }
+}
+
+fn start_search_command<B: ScoopBackend + Clone + Send + 'static>(
+    app: &mut App,
+    backend: &B,
+    completion_tx: &Sender<BackgroundCompletion>,
+) {
+    let requested_at = Instant::now();
+    let Some(query) = app.begin_search_results_at(requested_at) else {
+        return;
+    };
+
+    let backend = backend.clone();
+    let completion_tx = completion_tx.clone();
+    thread::spawn(move || {
+        let result = backend.search(&query);
+        let _ = completion_tx.send(BackgroundCompletion::Search {
+            result,
+            requested_at,
+        });
+    });
+}
+
+fn start_toggle_installed_command<B: ScoopBackend + Clone + Send + 'static>(
+    app: &mut App,
+    backend: &B,
+    completion_tx: &Sender<BackgroundCompletion>,
+) {
+    if app.package_view == scoop_tui::cache::PackageView::Installed {
+        start_search_command(app, backend, completion_tx);
+        return;
+    }
+
+    app.begin_installed_view();
+    let backend = backend.clone();
+    let completion_tx = completion_tx.clone();
+    thread::spawn(move || {
+        let result = backend.installed();
+        let _ = completion_tx.send(BackgroundCompletion::Installed(result));
+    });
+}
+
+fn start_setup_command<B: ScoopBackend + Clone + Send + 'static>(
+    app: &mut App,
+    backend: &B,
+    completion_tx: &Sender<BackgroundCompletion>,
+) {
+    if app.begin_setup_prompt().is_none() {
+        return;
+    }
+
+    let backend = backend.clone();
+    let completion_tx = completion_tx.clone();
+    thread::spawn(move || {
+        let result = backend.install_scoop();
+        let _ = completion_tx.send(BackgroundCompletion::Setup(result));
+    });
+}
+
+fn start_pending_action<B: ScoopBackend + Clone + Send + 'static>(
+    app: &mut App,
+    backend: &B,
+    completion_tx: &Sender<BackgroundCompletion>,
+) {
+    let Some(pending) = app.begin_pending_action() else {
+        return;
+    };
+
+    let backend = backend.clone();
+    let completion_tx = completion_tx.clone();
+    thread::spawn(move || {
+        let result = run_pending_action(&backend, &pending);
+        let installed_result = backend.installed();
+        let _ = completion_tx.send(BackgroundCompletion::PackageAction {
+            result,
+            installed_result,
+        });
+    });
+}
+
+fn run_pending_action<B: ScoopBackend>(backend: &B, pending: &PendingAction) -> CommandResult {
+    match pending.action {
+        PackageAction::Install => backend.install(&pending.package_name),
+        PackageAction::Uninstall => backend.uninstall(&pending.package_name),
+        PackageAction::Update => backend.update(&pending.package_name),
+    }
 }

@@ -1,6 +1,8 @@
 use ratatui::prelude::*;
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, Borders, Cell, Clear, Padding, Paragraph, Row, Table, Wrap};
+use ratatui::widgets::{
+    Block, Borders, Cell, Clear, Padding, Paragraph, Row, Table, TableState, Wrap,
+};
 
 use crate::app::{App, InputMode};
 
@@ -181,7 +183,8 @@ fn draw_packages(frame: &mut Frame<'_>, area: Rect, app: &App) {
     )
     .header(header)
     .block(Block::default().borders(Borders::ALL).title("Packages"));
-    frame.render_widget(table, area);
+    let mut state = TableState::default().with_selected(app.selected_index());
+    frame.render_stateful_widget(table, area, &mut state);
 }
 
 fn draw_side_panel(frame: &mut Frame<'_>, area: Rect, app: &App) {
@@ -229,6 +232,9 @@ fn draw_side_panel(frame: &mut Frame<'_>, area: Rect, app: &App) {
     } else {
         app.output.join("\n")
     };
+    let output_line_count = output.lines().count() as u16;
+    let visible_output_lines = sections[1].height.saturating_sub(2);
+    let output_scroll = output_line_count.saturating_sub(visible_output_lines);
     let terminal_title = if app.activity.is_active() {
         format!("Terminal - {}", app.activity_label())
     } else {
@@ -237,6 +243,7 @@ fn draw_side_panel(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let output = Paragraph::new(output)
         .style(Style::default().fg(Color::Gray))
         .block(Block::default().borders(Borders::ALL).title(terminal_title))
+        .scroll((output_scroll, 0))
         .wrap(Wrap { trim: false });
     frame.render_widget(output, sections[1]);
 }
@@ -632,6 +639,67 @@ mod tests {
         assert!(rendered.contains("Activity:"));
         assert!(rendered.contains("Installing gitui"));
         assert!(rendered.contains("Terminal - Installing gitui"));
+    }
+
+    #[test]
+    fn terminal_panel_shows_newest_output_when_history_exceeds_visible_height() {
+        let backend = MockBackend;
+        let mut app = App::new(backend.packages());
+        app.output = (0..40).map(|index| format!("line-{index:02}")).collect();
+        let backend = TestBackend::new(120, 24);
+        let mut terminal = Terminal::new(backend).expect("test terminal");
+
+        terminal
+            .draw(|frame| draw(frame, &app))
+            .expect("render frame");
+
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+
+        assert!(rendered.contains("line-39"));
+        assert!(!rendered.contains("line-00"));
+    }
+
+    #[test]
+    fn package_table_scrolls_to_keep_selected_row_visible() {
+        let mut app = App::new(
+            (0..30)
+                .map(|index| crate::models::Package {
+                    source: "main".to_string(),
+                    name: format!("pkg-{index:02}"),
+                    version: "1.0.0".to_string(),
+                    latest_version: None,
+                    description: String::new(),
+                    installed: false,
+                    homepage: None,
+                })
+                .collect(),
+        );
+        for _ in 0..25 {
+            app.move_down();
+        }
+        let backend = TestBackend::new(100, 20);
+        let mut terminal = Terminal::new(backend).expect("test terminal");
+
+        terminal
+            .draw(|frame| draw(frame, &app))
+            .expect("render frame");
+
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+
+        assert!(rendered.contains("pkg-25"));
+        assert!(!rendered.contains("pkg-00"));
     }
 
     #[test]

@@ -5,6 +5,7 @@ use crate::cache::{PackageCache, PackageCacheKey, PackageView};
 use crate::models::Package;
 
 const DEFAULT_PACKAGE_CACHE_TTL: Duration = Duration::from_secs(90);
+const MAX_OUTPUT_LINES: usize = 500;
 const SPINNER_FRAMES: [&str; 8] = ["|", "/", "-", "\\", "|", "/", "-", "\\"];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -67,6 +68,7 @@ impl SetupPrompt {
 pub enum Activity {
     Idle,
     Searching,
+    LoadingInstalled,
     InstallingScoop,
     RunningCommand {
         action: PackageAction,
@@ -79,6 +81,7 @@ impl Activity {
         match self {
             Self::Idle => "Idle".to_string(),
             Self::Searching => "Searching".to_string(),
+            Self::LoadingInstalled => "Loading installed".to_string(),
             Self::InstallingScoop => "Installing Scoop".to_string(),
             Self::RunningCommand {
                 action,
@@ -108,6 +111,7 @@ pub struct App {
     pub activity: Activity,
     spinner_index: usize,
     package_cache: PackageCache,
+    installed_packages: Vec<Package>,
 }
 
 impl App {
@@ -125,6 +129,7 @@ impl App {
             activity: Activity::Idle,
             spinner_index: 0,
             package_cache: PackageCache::new(DEFAULT_PACKAGE_CACHE_TTL),
+            installed_packages: Vec::new(),
         }
     }
 
@@ -204,12 +209,21 @@ impl App {
     }
 
     pub fn confirm_setup_prompt<B: ScoopBackend>(&mut self, backend: &B) -> Option<CommandResult> {
+        self.begin_setup_prompt()?;
+        let result = backend.install_scoop();
+        self.finish_setup_prompt(result.clone());
+        Some(result)
+    }
+
+    pub fn begin_setup_prompt(&mut self) -> Option<()> {
         self.setup_prompt.take()?;
         self.activity = Activity::InstallingScoop;
-        let result = backend.install_scoop();
+        Some(())
+    }
+
+    pub fn finish_setup_prompt(&mut self, result: CommandResult) {
         self.record_command(&result);
         self.activity = Activity::Idle;
-        Some(result)
     }
 
     pub fn cancel_pending_action(&mut self) {
@@ -232,19 +246,44 @@ impl App {
         &mut self,
         backend: &B,
     ) -> Option<CommandResult> {
-        let pending = self.pending_action.take()?;
-        self.activity = Activity::RunningCommand {
-            action: pending.action.clone(),
-            package_name: pending.package_name.clone(),
-        };
+        let pending = self.begin_pending_action()?;
         let result = match pending.action {
             PackageAction::Install => backend.install(&pending.package_name),
             PackageAction::Uninstall => backend.uninstall(&pending.package_name),
             PackageAction::Update => backend.update(&pending.package_name),
         };
-        self.record_command(&result);
-        self.activity = Activity::Idle;
+        let installed_result = backend.installed();
+        self.finish_pending_action(result.clone(), installed_result);
         Some(result)
+    }
+
+    pub fn begin_pending_action(&mut self) -> Option<PendingAction> {
+        let pending = self.pending_action.take()?;
+        self.activity = Activity::RunningCommand {
+            action: pending.action.clone(),
+            package_name: pending.package_name.clone(),
+        };
+        Some(pending)
+    }
+
+    pub fn finish_pending_action(
+        &mut self,
+        result: CommandResult,
+        installed_result: CommandResult,
+    ) {
+        let selected_name = self.selected_package().map(|package| package.name.clone());
+        self.record_command(&result);
+        self.installed_packages = installed_result.packages;
+        match self.package_view {
+            PackageView::Installed => {
+                self.packages = self.installed_packages.clone();
+                self.restore_selection_by_name(selected_name.as_deref());
+            }
+            PackageView::Search => {
+                self.packages = self.with_installed_state(self.packages.clone());
+            }
+        }
+        self.activity = Activity::Idle;
     }
 
     pub fn load_search_results<B: ScoopBackend>(&mut self, backend: &B) {
@@ -252,21 +291,41 @@ impl App {
     }
 
     pub fn load_search_results_at<B: ScoopBackend>(&mut self, backend: &B, now: Instant) {
+        let Some(query) = self.begin_search_results_at(now) else {
+            return;
+        };
+        let result = backend.search(&query);
+        self.finish_search_results_at(result, now);
+    }
+
+    pub fn begin_search_results(&mut self) -> Option<String> {
+        self.begin_search_results_at(Instant::now())
+    }
+
+    pub fn begin_search_results_at(&mut self, now: Instant) -> Option<String> {
         let key = PackageCacheKey::new(PackageView::Search, &self.search_query);
         self.package_view = PackageView::Search;
 
         if let Some(packages) = self.package_cache.get(&key, now) {
-            self.packages = packages;
+            self.packages = self.with_installed_state(packages);
             self.selected = 0;
-            return;
+            return None;
         }
 
         self.activity = Activity::Searching;
-        let result = backend.search(&self.search_query);
-        self.packages = result.packages.clone();
-        self.package_cache.insert(key, result.packages.clone(), now);
+        Some(self.search_query.clone())
+    }
+
+    pub fn finish_search_results(&mut self, result: CommandResult) {
+        self.finish_search_results_at(result, Instant::now());
+    }
+
+    pub fn finish_search_results_at(&mut self, result: CommandResult, now: Instant) {
+        let key = PackageCacheKey::new(PackageView::Search, &self.search_query);
+        let packages = self.with_installed_state(result.packages);
+        self.packages = packages.clone();
+        self.package_cache.insert(key, packages, now);
         self.selected = 0;
-        self.record_command(&result);
         self.activity = Activity::Idle;
     }
 
@@ -294,11 +353,21 @@ impl App {
     }
 
     pub fn show_installed_view<B: ScoopBackend>(&mut self, backend: &B) {
-        self.package_view = PackageView::Installed;
+        self.begin_installed_view();
         let result = backend.installed();
-        self.packages = result.packages.clone();
+        self.finish_installed_view(result);
+    }
+
+    pub fn begin_installed_view(&mut self) {
+        self.package_view = PackageView::Installed;
+        self.activity = Activity::LoadingInstalled;
+    }
+
+    pub fn finish_installed_view(&mut self, result: CommandResult) {
+        self.installed_packages = result.packages.clone();
+        self.packages = self.installed_packages.clone();
         self.selected = 0;
-        self.record_command(&result);
+        self.activity = Activity::Idle;
     }
 
     pub fn toggle_installed_view<B: ScoopBackend>(&mut self, backend: &B) {
@@ -369,10 +438,37 @@ impl App {
         self.output.push(format!("> {}", result.command));
         self.output
             .extend(result.output.lines().map(str::to_string));
-        if self.output.len() > 12 {
-            let overflow = self.output.len() - 12;
+        if self.output.len() > MAX_OUTPUT_LINES {
+            let overflow = self.output.len() - MAX_OUTPUT_LINES;
             self.output.drain(0..overflow);
         }
+    }
+
+    fn restore_selection_by_name(&mut self, name: Option<&str>) {
+        self.selected = name
+            .and_then(|name| {
+                self.filtered_packages()
+                    .into_iter()
+                    .position(|package| package.name == name)
+            })
+            .unwrap_or(0);
+        self.clamp_selection();
+    }
+
+    fn with_installed_state(&self, packages: Vec<Package>) -> Vec<Package> {
+        packages
+            .into_iter()
+            .map(|mut package| {
+                if self
+                    .installed_packages
+                    .iter()
+                    .any(|installed_package| installed_package.name == package.name)
+                {
+                    package.installed = true;
+                }
+                package
+            })
+            .collect()
     }
 
     fn request_selected_action(&mut self, action: PackageAction) -> Option<&PendingAction> {
@@ -393,6 +489,7 @@ mod tests {
 
     struct RecordingBackend {
         search_calls: Cell<usize>,
+        installed_calls: Cell<usize>,
         scoop_available: bool,
     }
 
@@ -400,6 +497,7 @@ mod tests {
         fn new() -> Self {
             Self {
                 search_calls: Cell::new(0),
+                installed_calls: Cell::new(0),
                 scoop_available: true,
             }
         }
@@ -407,6 +505,7 @@ mod tests {
         fn without_scoop() -> Self {
             Self {
                 search_calls: Cell::new(0),
+                installed_calls: Cell::new(0),
                 scoop_available: false,
             }
         }
@@ -432,6 +531,7 @@ mod tests {
         }
 
         fn installed(&self) -> CommandResult {
+            self.installed_calls.set(self.installed_calls.get() + 1);
             CommandResult {
                 command: "scoop list".to_string(),
                 output: "Listed installed packages".to_string(),
@@ -563,6 +663,45 @@ mod tests {
     }
 
     #[test]
+    fn refreshes_installed_view_after_confirmed_package_action() {
+        let backend = RecordingBackend::new();
+        let mut app = App::new(packages());
+        app.show_installed_view(&backend);
+        app.move_down();
+        app.request_update_selected();
+
+        app.confirm_pending_action(&backend);
+
+        assert_eq!(backend.installed_calls.get(), 2);
+        assert_eq!(app.package_view, PackageView::Installed);
+        assert_eq!(
+            app.selected_package().map(|package| package.name.as_str()),
+            Some("git")
+        );
+        assert!(app.output.iter().all(|line| line != "> scoop list"));
+        assert!(app.output.iter().any(|line| line == "> scoop update git"));
+    }
+
+    #[test]
+    fn confirmed_package_action_refreshes_installed_state_in_search_view() {
+        let backend = RecordingBackend::new();
+        let mut app = App::new(packages());
+        app.show_installed_view(&backend);
+        app.set_search_query("gitui");
+        app.load_search_results_at(&backend, Instant::now());
+        app.request_install_selected();
+
+        app.confirm_pending_action(&backend);
+
+        assert_eq!(backend.installed_calls.get(), 2);
+        assert_eq!(app.package_view, PackageView::Search);
+        assert!(app
+            .output
+            .iter()
+            .any(|line| line == "> scoop install gitui"));
+    }
+
+    #[test]
     fn cancels_pending_uninstall_without_recording_output() {
         let mut app = App::new(packages());
         app.request_uninstall_selected();
@@ -608,6 +747,26 @@ mod tests {
     }
 
     #[test]
+    fn beginning_setup_prompt_keeps_activity_active_until_finished() {
+        let mut app = App::new(packages());
+        app.setup_prompt = Some(SetupPrompt::InstallScoop);
+
+        app.begin_setup_prompt();
+
+        assert_eq!(app.setup_prompt, None);
+        assert_eq!(app.activity, Activity::InstallingScoop);
+
+        app.finish_setup_prompt(CommandResult {
+            command: SCOOP_INSTALL_COMMAND.to_string(),
+            output: "Installed Scoop".to_string(),
+            packages: Vec::new(),
+        });
+
+        assert_eq!(app.activity, Activity::Idle);
+        assert!(app.output.iter().any(|line| line == "Installed Scoop"));
+    }
+
+    #[test]
     fn toggles_help_modal_visibility() {
         let mut app = App::new(packages());
 
@@ -649,13 +808,7 @@ mod tests {
 
         assert_eq!(backend.search_calls.get(), 1);
         assert_eq!(app.package_view, PackageView::Search);
-        assert_eq!(
-            app.output
-                .iter()
-                .filter(|line| line.as_str() == "> scoop search git")
-                .count(),
-            1
-        );
+        assert!(app.output.iter().all(|line| line != "> scoop search git"));
         assert!(app.output.starts_with(&output_after_first_search));
         assert_eq!(
             app.filtered_packages()
@@ -678,13 +831,90 @@ mod tests {
         app.load_search_results_at(&backend, now + Duration::from_secs(11));
 
         assert_eq!(backend.search_calls.get(), 2);
+        assert!(app.output.iter().all(|line| line != "> scoop search git"));
+    }
+
+    #[test]
+    fn search_results_keep_installed_state_without_recording_result_rows() {
+        let now = Instant::now();
+        let backend = RecordingBackend::new();
+        let mut app = App::new(packages());
+        app.show_installed_view(&backend);
+        let output_after_installed_view = app.output.clone();
+        app.set_search_query("7zip");
+
+        app.load_search_results_at(&backend, now);
+
+        assert_eq!(app.package_view, PackageView::Search);
+        assert_eq!(app.output, output_after_installed_view);
         assert_eq!(
-            app.output
-                .iter()
-                .filter(|line| line.as_str() == "> scoop search git")
-                .count(),
-            2
+            app.selected_package()
+                .map(|package| package.state().marker()),
+            Some("[I]")
         );
+    }
+
+    #[test]
+    fn installed_view_updates_packages_without_recording_raw_list_output() {
+        let backend = RecordingBackend::new();
+        let mut app = App::new(Vec::new());
+
+        app.show_installed_view(&backend);
+
+        assert_eq!(app.package_view, PackageView::Installed);
+        assert_eq!(app.filtered_count(), 2);
+        assert!(app.output.is_empty());
+    }
+
+    #[test]
+    fn beginning_uncached_search_keeps_activity_active_until_finished() {
+        let now = Instant::now();
+        let mut app = App::new(packages());
+        app.set_search_query("git");
+
+        let query = app
+            .begin_search_results_at(now)
+            .expect("uncached search query");
+
+        assert_eq!(query, "git");
+        assert_eq!(app.activity, Activity::Searching);
+
+        app.finish_search_results_at(
+            CommandResult {
+                command: "scoop search git".to_string(),
+                output: "Found packages for git".to_string(),
+                packages: packages()
+                    .into_iter()
+                    .filter(|package| package.name.contains("git"))
+                    .collect(),
+            },
+            now,
+        );
+
+        assert_eq!(app.activity, Activity::Idle);
+        assert_eq!(app.filtered_count(), 2);
+    }
+
+    #[test]
+    fn beginning_installed_view_keeps_activity_active_until_finished() {
+        let mut app = App::new(Vec::new());
+
+        app.begin_installed_view();
+
+        assert_eq!(app.package_view, PackageView::Installed);
+        assert_eq!(app.activity, Activity::LoadingInstalled);
+
+        app.finish_installed_view(CommandResult {
+            command: "scoop list".to_string(),
+            output: "Listed installed packages".to_string(),
+            packages: packages()
+                .into_iter()
+                .filter(|package| package.installed)
+                .collect(),
+        });
+
+        assert_eq!(app.activity, Activity::Idle);
+        assert_eq!(app.filtered_count(), 2);
     }
 
     #[test]
@@ -698,6 +928,7 @@ mod tests {
         app.toggle_installed_view_at(&backend, now + Duration::from_secs(1));
 
         assert_eq!(app.package_view, PackageView::Installed);
+        assert!(app.output.is_empty());
         assert_eq!(
             app.filtered_packages()
                 .into_iter()
@@ -705,7 +936,6 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["git"]
         );
-        assert!(app.output.iter().any(|line| line == "> scoop list"));
     }
 
     #[test]
@@ -751,6 +981,43 @@ mod tests {
         assert_eq!(app.activity_label(), "Installing gitui |");
         app.tick();
         assert_eq!(app.activity_label(), "Installing gitui /");
+    }
+
+    #[test]
+    fn beginning_pending_action_keeps_activity_active_until_finished() {
+        let mut app = App::new(packages());
+        app.move_down();
+        app.request_update_selected();
+
+        let pending = app.begin_pending_action().expect("pending action");
+
+        assert_eq!(pending.command_preview(), "scoop update git");
+        assert_eq!(
+            app.activity,
+            Activity::RunningCommand {
+                action: PackageAction::Update,
+                package_name: "git".to_string()
+            }
+        );
+
+        app.finish_pending_action(
+            CommandResult {
+                command: "scoop update git".to_string(),
+                output: "Updated git".to_string(),
+                packages: Vec::new(),
+            },
+            CommandResult {
+                command: "scoop list".to_string(),
+                output: "Listed installed packages".to_string(),
+                packages: packages()
+                    .into_iter()
+                    .filter(|package| package.installed)
+                    .collect(),
+            },
+        );
+
+        assert_eq!(app.activity, Activity::Idle);
+        assert!(app.output.iter().any(|line| line == "Updated git"));
     }
 
     fn packages() -> Vec<Package> {
