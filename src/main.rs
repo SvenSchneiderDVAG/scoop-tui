@@ -29,10 +29,6 @@ fn main() -> Result<()> {
 
     let mut app = App::new(Vec::new());
     let browser = SystemBrowser;
-    app.check_scoop_available(&backend);
-    if app.setup_prompt.is_none() {
-        app.show_installed_view(&backend);
-    }
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(
@@ -43,6 +39,11 @@ fn main() -> Result<()> {
     )?;
     let terminal_backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(terminal_backend)?;
+
+    app.check_scoop_available(&backend);
+    if app.setup_prompt.is_none() {
+        app.show_installed_view(&backend);
+    }
 
     let result = run(&mut terminal, &mut app, &backend, &browser);
 

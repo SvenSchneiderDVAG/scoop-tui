@@ -4,7 +4,7 @@ use std::process::Command;
 
 use crate::app::App;
 use crate::backend::ScoopBackend;
-use crate::ui::{footer_text, layout_for, AppLayout};
+use crate::ui::{footer_text_for_width, layout_for, AppLayout};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MouseOutcome {
@@ -286,7 +286,7 @@ fn footer_action_at(app: &App, area: Rect, column: u16, row: u16) -> Option<Foot
     }
 
     let relative = usize::from(column - area.x - 1);
-    let text = footer_text(app.input_mode);
+    let text = footer_text_for_width(app.input_mode, area.width.saturating_sub(2));
     [
         ("[/]", FooterAction::Filter),
         ("[s]", FooterAction::Search),
@@ -311,7 +311,7 @@ fn action_range(text: &str, label: &str) -> std::ops::Range<usize> {
     };
     let rest = &text[start_byte + label.len()..];
     let end_byte = rest
-        .find("  [")
+        .find('[')
         .map(|offset| start_byte + label.len() + offset)
         .unwrap_or(text.len());
     let start = text[..start_byte].chars().count();
@@ -443,7 +443,7 @@ mod tests {
             &mut app,
             &backend,
             area,
-            mouse_event(MouseEventKind::Down(MouseButton::Left), 109, 30),
+            mouse_event(MouseEventKind::Down(MouseButton::Left), 74, 30),
         );
         assert_eq!(
             app.pending_action

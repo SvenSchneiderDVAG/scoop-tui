@@ -140,7 +140,7 @@ fn draw_packages(frame: &mut Frame<'_>, area: Rect, app: &App) {
         Cell::from("Bucket"),
         Cell::from("Name"),
         Cell::from("Version"),
-        Cell::from("Description"),
+        Cell::from("Latest"),
     ])
     .style(Style::default().fg(Color::Blue));
 
@@ -151,6 +151,8 @@ fn draw_packages(frame: &mut Frame<'_>, area: Rect, app: &App) {
         .map(|(index, package)| {
             let style = if index == app.selected_index() {
                 Style::default().fg(Color::Black).bg(Color::Gray)
+            } else if package.update_available() {
+                Style::default().fg(Color::Yellow)
             } else if package.installed {
                 Style::default().fg(Color::Green)
             } else {
@@ -161,7 +163,7 @@ fn draw_packages(frame: &mut Frame<'_>, area: Rect, app: &App) {
                 Cell::from(truncate_for_table(&package.source, 14)),
                 Cell::from(truncate_for_table(&package.name, 24)),
                 Cell::from(truncate_for_table(&package.version, 18)),
-                Cell::from(package.description.clone()),
+                Cell::from(truncate_for_table(package.latest_display(), 18)),
             ])
             .style(style)
         });
@@ -173,7 +175,8 @@ fn draw_packages(frame: &mut Frame<'_>, area: Rect, app: &App) {
             Constraint::Length(14),
             Constraint::Length(24),
             Constraint::Length(18),
-            Constraint::Min(20),
+            Constraint::Length(18),
+            Constraint::Min(1),
         ],
     )
     .header(header)
@@ -204,16 +207,13 @@ fn draw_side_panel(frame: &mut Frame<'_>, area: Rect, app: &App) {
                     Span::raw(package.version.clone()),
                 ]),
                 Line::from(vec![
+                    Span::styled("Latest: ", Style::default().fg(Color::Yellow)),
+                    Span::raw(package.latest_display().to_string()),
+                ]),
+                Line::from(vec![
                     Span::styled("Status: ", Style::default().fg(Color::Yellow)),
                     Span::raw(package.state().label()),
                 ]),
-                Line::from(vec![
-                    Span::styled("Homepage: ", Style::default().fg(Color::Yellow)),
-                    Span::raw(package.homepage.as_deref().unwrap_or("-").to_string()),
-                ]),
-                Line::raw(""),
-                Line::styled("Description", Style::default().fg(Color::Yellow)),
-                Line::raw(package.description.clone()),
             ])
         })
         .unwrap_or_else(|| Text::from("No package selected"));
@@ -242,21 +242,37 @@ fn draw_side_panel(frame: &mut Frame<'_>, area: Rect, app: &App) {
 }
 
 fn draw_footer(frame: &mut Frame<'_>, area: Rect, app: &App) {
-    let footer = Paragraph::new(footer_text(app.input_mode))
-        .style(Style::default().fg(Color::Yellow))
-        .block(Block::default().borders(Borders::ALL));
+    let footer = Paragraph::new(footer_text_for_width(
+        app.input_mode,
+        area.width.saturating_sub(2),
+    ))
+    .style(Style::default().fg(Color::Yellow))
+    .block(Block::default().borders(Borders::ALL));
     frame.render_widget(footer, area);
 }
 
-pub(crate) fn footer_text(input_mode: crate::app::InputMode) -> String {
+pub(crate) fn footer_text_for_width(input_mode: crate::app::InputMode, width: u16) -> String {
     let mode = match input_mode {
         crate::app::InputMode::Browse => "Browse",
         crate::app::InputMode::Search => "Search",
     };
-    format!(
+    let full = format!(
         "[{}]  [↑/↓] Navigate  [/] Filter  [s] Search Apps  [l] Toggle Installed  [i] Install  [r] Uninstall  [u] Update  [?] Help  [q] Quit",
         mode
-    )
+    );
+    if full.chars().count() <= usize::from(width) {
+        return full;
+    }
+
+    let compact = format!(
+        "[{}] [↑/↓] Nav [/] Filter [s] Search [l] Toggle [i] Inst [r] Uninst [u] Upd [?] Help [q] Quit",
+        mode
+    );
+    if compact.chars().count() <= usize::from(width) {
+        return compact;
+    }
+
+    format!("[{}] [↑/↓] [/] [s] [l] [i] [r] [u] [?] [q]", mode)
 }
 
 fn draw_confirmation_modal(frame: &mut Frame<'_>, app: &App) {
@@ -625,6 +641,7 @@ mod tests {
             source: "very-long-bucket-name-that-will-truncate".to_string(),
             name: long_name.to_string(),
             version: "2026.05.20-build-with-long-suffix".to_string(),
+            latest_version: None,
             description: "A package with intentionally long fields".to_string(),
             installed: false,
             homepage: Some("https://example.com/very/long/path/that/should/wrap".to_string()),
@@ -654,5 +671,25 @@ mod tests {
             app.selected_package().map(|package| package.name.as_str()),
             Some(long_name)
         );
+    }
+
+    #[test]
+    fn footer_uses_compact_labels_when_width_is_limited() {
+        let text = footer_text_for_width(crate::app::InputMode::Browse, 100);
+
+        assert!(text.contains("[s] Search"));
+        assert!(text.contains("[l] Toggle"));
+        assert!(!text.contains("Search Apps"));
+        assert!(text.chars().count() <= 100);
+    }
+
+    #[test]
+    fn footer_falls_back_to_key_only_labels_at_very_small_widths() {
+        let text = footer_text_for_width(crate::app::InputMode::Browse, 48);
+
+        assert!(text.contains("[s]"));
+        assert!(text.contains("[q]"));
+        assert!(!text.contains("Search"));
+        assert!(text.chars().count() <= 48);
     }
 }

@@ -4,7 +4,7 @@ An unofficial Ratatui-based terminal UI for [Scoop](https://github.com/ScoopInst
 
 > `scoop-tui` is not affiliated with, maintained by, or endorsed by ScoopInstaller. Scoop is licensed separately under the Unlicense or MIT license.
 
-The current version keeps a mock backend for non-Windows development and tests. On Windows, the app selects a production backend that discovers the Scoop environment and shells out to `scoop`/PowerShell commands.
+On Windows, the app discovers the Scoop environment and shells out to `scoop` commands. Non-Windows development and tests use sample package data.
 
 ## Run
 
@@ -17,9 +17,9 @@ Keys:
 - `/` enter search mode
 - `Esc` or `Enter` leave search mode
 - `Up`/`Down` or `k`/`j` move selection
-- `i` mock install selected package
-- `u` mock update selected package
-- `r` mock uninstall selected package
+- `i` install selected package
+- `u` update selected package
+- `r` uninstall selected package
 - `y` confirm a pending command
 - `n` or `Esc` cancel a pending command
 - `s` load package search results
@@ -49,7 +49,7 @@ Mouse:
 - Help modal with grouped key bindings
 - Mouse support for package selection, search mode, modal actions, footer actions, scrolling, and homepage links
 - Production backend selected on Windows
-- Mock backend with sample Scoop packages and buckets for tests and non-Windows development
+- Sample Scoop packages and buckets for tests and non-Windows development
 - Scoop environment discovery for `SCOOP`, `SCOOP_GLOBAL`, bucket paths, app paths, and cache paths
 - Short-lived package search cache so returning to recent searches does not rerun the backend or duplicate output
 
