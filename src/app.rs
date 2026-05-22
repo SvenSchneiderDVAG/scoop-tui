@@ -594,7 +594,9 @@ mod tests {
 
         assert_eq!(result.command, SCOOP_INSTALL_COMMAND);
         assert_eq!(app.setup_prompt, None);
-        assert!(app.output.iter().any(|line| line == "> Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser; Invoke-RestMethod -Uri https://get.scoop.sh | Invoke-Expression"));
+        assert!(app.output.iter().any(
+            |line| line == "> Invoke-RestMethod -Uri https://get.scoop.sh | Invoke-Expression"
+        ));
         assert!(app.output.iter().any(|line| line == "Installed Scoop"));
     }
 
