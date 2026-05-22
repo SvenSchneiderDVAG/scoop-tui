@@ -18,6 +18,7 @@ pub trait ScoopBackend {
     fn is_scoop_available(&self) -> bool;
     fn environment(&self) -> ScoopEnvironment;
     fn packages(&self) -> Vec<Package>;
+    fn installed(&self) -> CommandResult;
     fn search(&self, query: &str) -> CommandResult;
     fn install_scoop(&self) -> CommandResult;
     fn install(&self, name: &str) -> CommandResult;
@@ -99,7 +100,13 @@ impl ScoopBackend for ProductionBackend {
     }
 
     fn packages(&self) -> Vec<Package> {
-        Vec::new()
+        self.installed().packages
+    }
+
+    fn installed(&self) -> CommandResult {
+        let mut result = self.run_scoop_command(&["list"]);
+        result.packages = parse_scoop_list_packages(&result.output);
+        result
     }
 
     fn search(&self, query: &str) -> CommandResult {
@@ -178,7 +185,11 @@ fn scoop_process(executable: Option<&Path>, args: &[&str]) -> Command {
 }
 
 fn shell_scoop_command(args: &[&str]) -> Command {
-    powershell_command("scoop", args)
+    let mut command = Command::new("cmd.exe");
+    command
+        .args(["/D", "/C"])
+        .arg(cmd_script(Path::new("scoop"), args));
+    command
 }
 
 fn shell_scoop_lookup_command() -> Command {
@@ -193,7 +204,9 @@ fn scoop_command(executable: &Path, args: &[&str]) -> Command {
         .and_then(|extension| extension.to_str())
     {
         Some(extension) if extension.eq_ignore_ascii_case("cmd") => {
-            powershell_command(&executable.to_string_lossy(), args)
+            let mut command = Command::new("cmd.exe");
+            command.args(["/D", "/C"]).arg(cmd_script(executable, args));
+            command
         }
         Some(extension) if extension.eq_ignore_ascii_case("ps1") => {
             powershell_command(&executable.to_string_lossy(), args)
@@ -210,6 +223,33 @@ fn powershell_script(script: &str) -> String {
     format!(
         "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; $OutputEncoding = [System.Text.Encoding]::UTF8; {script}"
     )
+}
+
+fn cmd_script(executable: &Path, args: &[&str]) -> String {
+    let quoted_args = args
+        .iter()
+        .map(|argument| quote_cmd_argument(argument))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let executable = executable.to_string_lossy();
+    let executable_command = if executable.contains('\\')
+        || executable.contains('/')
+        || executable.to_ascii_lowercase().ends_with(".cmd")
+    {
+        format!("call {}", quote_cmd_argument(&executable))
+    } else {
+        executable.to_string()
+    };
+
+    if quoted_args.is_empty() {
+        format!("chcp 65001 >NUL && {executable_command}")
+    } else {
+        format!("chcp 65001 >NUL && {executable_command} {quoted_args}")
+    }
+}
+
+fn quote_cmd_argument(argument: &str) -> String {
+    format!("\"{}\"", argument.replace('"', "\"\""))
 }
 
 fn powershell_command(executable: &str, args: &[&str]) -> Command {
@@ -252,6 +292,39 @@ fn scoop_executable_candidates(environment: &ScoopEnvironment) -> Vec<PathBuf> {
 
     candidates.push(PathBuf::from("scoop"));
     candidates
+}
+
+fn parse_scoop_list_packages(output: &str) -> Vec<Package> {
+    output.lines().filter_map(parse_scoop_list_line).collect()
+}
+
+fn parse_scoop_list_line(line: &str) -> Option<Package> {
+    let line = line.trim();
+    if line.is_empty()
+        || line.starts_with("Installed apps")
+        || line.starts_with("Name ")
+        || line.starts_with("----")
+    {
+        return None;
+    }
+
+    let columns = line.split_whitespace().collect::<Vec<_>>();
+    if columns.len() < 3 {
+        return None;
+    }
+
+    let name = columns.first()?.to_string();
+    let version = columns.get(1)?.to_string();
+    let source = columns.get(2)?.to_string();
+
+    Some(Package {
+        source,
+        name,
+        version,
+        description: "Installed package".to_string(),
+        installed: true,
+        homepage: None,
+    })
 }
 
 #[derive(Debug, Default)]
@@ -335,6 +408,18 @@ impl ScoopBackend for MockBackend {
                 homepage: Some("https://www.python.org".to_string()),
             },
         ]
+    }
+
+    fn installed(&self) -> CommandResult {
+        CommandResult {
+            command: "scoop list".to_string(),
+            output: "Mock backend: installed packages served from sample package data.".to_string(),
+            packages: self
+                .packages()
+                .into_iter()
+                .filter(|package| package.installed)
+                .collect(),
+        }
     }
 
     fn search(&self, query: &str) -> CommandResult {
@@ -434,18 +519,16 @@ mod tests {
 
         let command = scoop_command(&shim, &["search"]);
 
-        assert_eq!(command.get_program(), "powershell");
+        assert_eq!(command.get_program(), "cmd.exe");
         assert_eq!(
             command
                 .get_args()
                 .map(|argument| argument.to_string_lossy().to_string())
                 .collect::<Vec<_>>(),
             vec![
-                "-NoProfile",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-Command",
-                "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; $OutputEncoding = [System.Text.Encoding]::UTF8; & 'C:\\Users\\diz\\scoop\\shims\\scoop.cmd' 'search'"
+                "/D",
+                "/C",
+                r#"chcp 65001 >NUL && call "C:\Users\diz\scoop\shims\scoop.cmd" "search""#
             ]
         );
     }
@@ -454,19 +537,13 @@ mod tests {
     fn falls_back_to_cmd_shell_resolution_when_no_shim_path_was_found() {
         let command = scoop_process(None, &["--version"]);
 
-        assert_eq!(command.get_program(), "powershell");
+        assert_eq!(command.get_program(), "cmd.exe");
         assert_eq!(
             command
                 .get_args()
                 .map(|argument| argument.to_string_lossy().to_string())
                 .collect::<Vec<_>>(),
-            vec![
-                "-NoProfile",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-Command",
-                "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; $OutputEncoding = [System.Text.Encoding]::UTF8; & 'scoop' '--version'"
-            ]
+            vec!["/D", "/C", r#"chcp 65001 >NUL && scoop "--version""#]
         );
     }
 
@@ -481,6 +558,51 @@ mod tests {
                 .map(|argument| argument.to_string_lossy().to_string())
                 .collect::<Vec<_>>(),
             vec!["/D", "/C", "where scoop >NUL 2>NUL"]
+        );
+    }
+
+    #[test]
+    fn parses_scoop_list_output_into_installed_packages() {
+        let output = r#"
+Installed apps:
+
+Name      Version  Source Updated             Info
+----      -------  ------ -------             ----
+zettlr    4.5.0    extras 2026-05-20 18:31:00
+zim       0.76.3   extras 2026-05-20 18:31:00
+7zip      24.09    main   2026-05-20 18:31:00
+"#;
+
+        let packages = parse_scoop_list_packages(output);
+
+        assert_eq!(
+            packages,
+            vec![
+                Package {
+                    source: "extras".to_string(),
+                    name: "zettlr".to_string(),
+                    version: "4.5.0".to_string(),
+                    description: "Installed package".to_string(),
+                    installed: true,
+                    homepage: None,
+                },
+                Package {
+                    source: "extras".to_string(),
+                    name: "zim".to_string(),
+                    version: "0.76.3".to_string(),
+                    description: "Installed package".to_string(),
+                    installed: true,
+                    homepage: None,
+                },
+                Package {
+                    source: "main".to_string(),
+                    name: "7zip".to_string(),
+                    version: "24.09".to_string(),
+                    description: "Installed package".to_string(),
+                    installed: true,
+                    homepage: None,
+                },
+            ]
         );
     }
 

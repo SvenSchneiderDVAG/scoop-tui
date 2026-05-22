@@ -295,12 +295,10 @@ impl App {
 
     pub fn show_installed_view<B: ScoopBackend>(&mut self, backend: &B) {
         self.package_view = PackageView::Installed;
-        self.packages = backend
-            .packages()
-            .into_iter()
-            .filter(|package| package.installed)
-            .collect();
+        let result = backend.installed();
+        self.packages = result.packages.clone();
         self.selected = 0;
+        self.record_command(&result);
     }
 
     pub fn toggle_installed_view<B: ScoopBackend>(&mut self, backend: &B) {
@@ -431,6 +429,17 @@ mod tests {
 
         fn packages(&self) -> Vec<Package> {
             packages()
+        }
+
+        fn installed(&self) -> CommandResult {
+            CommandResult {
+                command: "scoop list".to_string(),
+                output: "Listed installed packages".to_string(),
+                packages: packages()
+                    .into_iter()
+                    .filter(|package| package.installed)
+                    .collect(),
+            }
         }
 
         fn search(&self, name: &str) -> CommandResult {
@@ -640,7 +649,14 @@ mod tests {
 
         assert_eq!(backend.search_calls.get(), 1);
         assert_eq!(app.package_view, PackageView::Search);
-        assert_eq!(app.output, output_after_first_search);
+        assert_eq!(
+            app.output
+                .iter()
+                .filter(|line| line.as_str() == "> scoop search git")
+                .count(),
+            1
+        );
+        assert!(app.output.starts_with(&output_after_first_search));
         assert_eq!(
             app.filtered_packages()
                 .into_iter()
@@ -689,6 +705,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["git"]
         );
+        assert!(app.output.iter().any(|line| line == "> scoop list"));
     }
 
     #[test]
