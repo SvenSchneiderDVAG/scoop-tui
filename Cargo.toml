@@ -1,6 +1,6 @@
 [package]
 name = "scoop-tui"
-version = "0.2.13"
+version = "0.2.14"
 edition = "2021"
 license = "MIT"
 
@@ -9,3 +9,10 @@ anyhow = "1.0"
 crossterm = "0.28"
 ratatui = "0.29"
 serde = { version = "1.0", features = ["derive"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_Threading",
+] }

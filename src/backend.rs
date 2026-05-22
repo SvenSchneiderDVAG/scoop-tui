@@ -7,6 +7,8 @@ use std::process::Command;
 
 pub const SCOOP_INSTALL_COMMAND: &str =
     "Invoke-RestMethod -Uri https://get.scoop.sh | Invoke-Expression";
+const SCOOP_NOT_FOUND_MESSAGE: &str =
+    "Scoop executable was not found. Install Scoop or make sure its shims directory is on PATH.";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommandResult {
@@ -51,7 +53,14 @@ impl ProductionBackend {
 
     fn run_scoop_command(&self, args: &[&str]) -> CommandResult {
         let command = format!("scoop {}", args.join(" "));
-        let mut process = scoop_process(self.scoop_executable().as_deref(), args);
+        let Some(executable) = self.scoop_executable() else {
+            return CommandResult {
+                command,
+                output: SCOOP_NOT_FOUND_MESSAGE.to_string(),
+                packages: Vec::new(),
+            };
+        };
+        let mut process = scoop_command(&executable, args);
 
         match process.output() {
             Ok(output) => {
@@ -84,16 +93,7 @@ impl ProductionBackend {
 
 impl ScoopBackend for ProductionBackend {
     fn is_scoop_available(&self) -> bool {
-        if self.scoop_executable().is_some() {
-            return true;
-        }
-
-        let mut process = shell_scoop_lookup_command();
-
-        process
-            .output()
-            .map(|output| output.status.success())
-            .unwrap_or(false)
+        self.scoop_executable().is_some()
     }
 
     fn environment(&self) -> ScoopEnvironment {
@@ -192,24 +192,6 @@ fn find_scoop_executable(environment: &ScoopEnvironment) -> Option<PathBuf> {
     scoop_executable_candidates(environment)
         .into_iter()
         .find(|candidate| candidate.is_file())
-}
-
-fn scoop_process(executable: Option<&Path>, args: &[&str]) -> Command {
-    match executable {
-        Some(executable) => scoop_command(executable, args),
-        None => shell_scoop_command(args),
-    }
-}
-
-fn shell_scoop_command(args: &[&str]) -> Command {
-    cmd_command(&cmd_script(Path::new("scoop"), args))
-}
-
-fn shell_scoop_lookup_command() -> Command {
-    let mut command = Command::new("cmd.exe");
-    command.args(["/D", "/C", "where scoop >NUL 2>NUL"]);
-    hide_child_window(&mut command);
-    command
 }
 
 fn scoop_command(executable: &Path, args: &[&str]) -> Command {
@@ -334,8 +316,6 @@ fn scoop_executable_candidates(environment: &ScoopEnvironment) -> Vec<PathBuf> {
             candidates.push(path.join("scoop.exe"));
         }
     }
-
-    candidates.push(PathBuf::from("scoop"));
     candidates
 }
 
@@ -673,31 +653,33 @@ mod tests {
     }
 
     #[test]
-    fn falls_back_to_cmd_shell_resolution_when_no_shim_path_was_found() {
-        let command = scoop_process(None, &["--version"]);
+    fn does_not_add_relative_scoop_fallback_candidate() {
+        let environment = ScoopEnvironment {
+            user_root: temp_scoop_root("user"),
+            global_root: temp_scoop_root("global"),
+        };
 
-        assert_eq!(command.get_program(), "cmd.exe");
-        assert_eq!(
-            command
-                .get_args()
-                .map(|argument| argument.to_string_lossy().to_string())
-                .collect::<Vec<_>>(),
-            vec!["/D", "/C", r#"chcp 65001 >NUL && scoop "--version""#]
-        );
+        let candidates = scoop_executable_candidates(&environment);
+
+        assert!(!candidates.contains(&PathBuf::from("scoop")));
     }
 
     #[test]
-    fn availability_uses_shell_lookup_instead_of_version_command() {
-        let command = shell_scoop_lookup_command();
+    fn missing_scoop_does_not_shell_resolve_bare_command() {
+        let environment = ScoopEnvironment {
+            user_root: temp_scoop_root("missing-user"),
+            global_root: temp_scoop_root("missing-global"),
+        };
+        let backend = ProductionBackend::new(environment);
 
-        assert_eq!(command.get_program(), "cmd.exe");
+        let result = backend.search("7zip");
+
+        assert_eq!(result.command, "scoop search 7zip");
         assert_eq!(
-            command
-                .get_args()
-                .map(|argument| argument.to_string_lossy().to_string())
-                .collect::<Vec<_>>(),
-            vec!["/D", "/C", "where scoop >NUL 2>NUL"]
+            result.output,
+            "Scoop executable was not found. Install Scoop or make sure its shims directory is on PATH."
         );
+        assert!(result.packages.is_empty());
     }
 
     #[test]

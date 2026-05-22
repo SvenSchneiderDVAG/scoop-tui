@@ -22,8 +22,13 @@ use scoop_tui::backend::MockBackend;
 use scoop_tui::backend::ProductionBackend;
 use scoop_tui::backend::{CommandResult, ScoopBackend};
 use scoop_tui::input::SystemBrowser;
+use scoop_tui::single_instance::SingleInstanceGuard;
 
 fn main() -> Result<()> {
+    let Some(_single_instance) = SingleInstanceGuard::acquire()? else {
+        return Ok(());
+    };
+
     #[cfg(target_os = "windows")]
     let backend = ProductionBackend::default();
     #[cfg(not(target_os = "windows"))]
@@ -43,9 +48,6 @@ fn main() -> Result<()> {
     let mut terminal = Terminal::new(terminal_backend)?;
 
     app.check_scoop_available(&backend);
-    if app.setup_prompt.is_none() {
-        app.show_installed_view(&backend);
-    }
 
     let result = run(&mut terminal, &mut app, backend, &browser);
 
@@ -81,6 +83,9 @@ fn run<B: ScoopBackend + Clone + Send + 'static>(
     browser: &SystemBrowser,
 ) -> Result<()> {
     let (completion_tx, completion_rx) = mpsc::channel();
+    if app.setup_prompt.is_none() {
+        start_installed_command(app, &backend, &completion_tx);
+    }
 
     loop {
         apply_background_completions(app, &completion_rx);
@@ -265,6 +270,14 @@ fn start_toggle_installed_command<B: ScoopBackend + Clone + Send + 'static>(
         return;
     }
 
+    start_installed_command(app, backend, completion_tx);
+}
+
+fn start_installed_command<B: ScoopBackend + Clone + Send + 'static>(
+    app: &mut App,
+    backend: &B,
+    completion_tx: &Sender<BackgroundCompletion>,
+) {
     app.begin_installed_view();
     let backend = backend.clone();
     let completion_tx = completion_tx.clone();

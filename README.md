@@ -51,6 +51,7 @@ Mouse:
 - Integrated terminal panel showing confirmed command output
 - Scrollable terminal output panel
 - Header and terminal activity indicators with animated spinner state while commands run
+- Windows single-instance guard so duplicate launches exit before drawing another TUI
 - Confirmation modal before install, update, or uninstall actions run
 - Setup prompt for Windows systems where Scoop is not detected
 - Scrollable help modal with grouped key bindings
