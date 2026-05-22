@@ -13,6 +13,7 @@ impl ScoopEnvironment {
     }
 
     pub fn from_env_map(env: HashMap<String, String>) -> Self {
+        let env = CaseInsensitiveEnv::new(env);
         let user_root = env
             .get("SCOOP")
             .filter(|value| !value.trim().is_empty())
@@ -57,6 +58,25 @@ impl ScoopEnvironment {
     }
 }
 
+struct CaseInsensitiveEnv {
+    values: HashMap<String, String>,
+}
+
+impl CaseInsensitiveEnv {
+    fn new(env: HashMap<String, String>) -> Self {
+        Self {
+            values: env
+                .into_iter()
+                .map(|(key, value)| (key.to_ascii_uppercase(), value))
+                .collect(),
+        }
+    }
+
+    fn get(&self, key: &str) -> Option<&String> {
+        self.values.get(&key.to_ascii_uppercase())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -89,6 +109,22 @@ mod tests {
             discovered.global_root,
             PathBuf::from(r"C:\ProgramData\scoop")
         );
+    }
+
+    #[test]
+    fn reads_windows_environment_names_case_insensitively() {
+        let env = HashMap::from([
+            ("UserProfile".to_string(), r"C:\Users\diz".to_string()),
+            ("scoop_global".to_string(), r"D:\GlobalScoop".to_string()),
+        ]);
+
+        let discovered = ScoopEnvironment::from_env_map(env);
+
+        assert_eq!(
+            discovered.user_root,
+            PathBuf::from(r"C:\Users\diz").join("scoop")
+        );
+        assert_eq!(discovered.global_root, PathBuf::from(r"D:\GlobalScoop"));
     }
 
     #[test]

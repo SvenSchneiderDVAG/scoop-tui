@@ -49,10 +49,7 @@ impl ProductionBackend {
 
     fn run_scoop_command(&self, args: &[&str]) -> CommandResult {
         let command = format!("scoop {}", args.join(" "));
-        let executable = self
-            .scoop_executable()
-            .unwrap_or_else(|| PathBuf::from("scoop"));
-        let mut process = scoop_command(&executable, args);
+        let mut process = scoop_process(self.scoop_executable().as_deref(), args);
 
         match process.output() {
             Ok(output) => {
@@ -85,11 +82,7 @@ impl ProductionBackend {
 
 impl ScoopBackend for ProductionBackend {
     fn is_scoop_available(&self) -> bool {
-        let Some(executable) = self.scoop_executable() else {
-            return false;
-        };
-
-        let mut process = scoop_command(&executable, &["--version"]);
+        let mut process = scoop_process(self.scoop_executable().as_deref(), &["--version"]);
 
         process
             .output()
@@ -171,6 +164,21 @@ fn find_scoop_executable(environment: &ScoopEnvironment) -> Option<PathBuf> {
     scoop_executable_candidates(environment)
         .into_iter()
         .find(|candidate| candidate.is_file())
+}
+
+fn scoop_process(executable: Option<&Path>, args: &[&str]) -> Command {
+    match executable {
+        Some(executable) => scoop_command(executable, args),
+        None => shell_scoop_command(args),
+    }
+}
+
+fn shell_scoop_command(args: &[&str]) -> Command {
+    let mut command = Command::new("cmd.exe");
+    command
+        .args(["/D", "/C"])
+        .arg(cmd_script(Path::new("scoop"), args));
+    command
 }
 
 fn scoop_command(executable: &Path, args: &[&str]) -> Command {
@@ -446,6 +454,20 @@ mod tests {
                 "/C",
                 r#"chcp 65001 >NUL && "C:\Users\diz\scoop\shims\scoop.cmd" "--version""#
             ]
+        );
+    }
+
+    #[test]
+    fn falls_back_to_cmd_shell_resolution_when_no_shim_path_was_found() {
+        let command = scoop_process(None, &["--version"]);
+
+        assert_eq!(command.get_program(), "cmd.exe");
+        assert_eq!(
+            command
+                .get_args()
+                .map(|argument| argument.to_string_lossy().to_string())
+                .collect::<Vec<_>>(),
+            vec!["/D", "/C", r#"chcp 65001 >NUL && "scoop" "--version""#]
         );
     }
 

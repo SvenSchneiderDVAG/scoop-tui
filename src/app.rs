@@ -116,9 +116,7 @@ impl App {
             packages,
             search_query: String::new(),
             selected: 0,
-            output: vec![
-                "Mock Scoop backend active. Real commands are Windows-only for now.".to_string(),
-            ],
+            output: Vec::new(),
             input_mode: InputMode::Browse,
             package_view: PackageView::Installed,
             pending_action: None,
@@ -535,7 +533,7 @@ mod tests {
             .expect("pending install action");
 
         assert_eq!(pending.command_preview(), "scoop install gitui");
-        assert_eq!(app.output.len(), 1);
+        assert!(app.output.is_empty());
     }
 
     #[test]
@@ -563,7 +561,7 @@ mod tests {
         app.cancel_pending_action();
 
         assert_eq!(app.pending_action, None);
-        assert_eq!(app.output.len(), 1);
+        assert!(app.output.is_empty());
     }
 
     #[test]
