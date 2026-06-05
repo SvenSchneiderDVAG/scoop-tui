@@ -225,10 +225,7 @@ impl App {
     }
 
     pub fn request_update_all_available(&mut self) -> Option<&PendingAction> {
-        self.packages
-            .iter()
-            .any(|package| package.update_available())
-            .then_some(())?;
+        (!self.packages.is_empty()).then_some(())?;
         self.pending_action = Some(PendingAction {
             action: PackageAction::Update,
             package_name: "*".to_string(),
@@ -848,11 +845,8 @@ mod tests {
     }
 
     #[test]
-    fn requests_update_all_available_packages_as_scoop_star_update() {
-        let mut packages = packages();
-        packages[0].latest_version = Some("26.01".to_string());
-        packages[1].latest_version = Some("2.50.0".to_string());
-        let mut app = App::new(packages);
+    fn requests_update_all_loaded_packages_as_scoop_star_update() {
+        let mut app = App::new(packages());
 
         let pending = app
             .request_update_all_available()
@@ -862,8 +856,8 @@ mod tests {
     }
 
     #[test]
-    fn skips_update_all_when_no_packages_have_updates() {
-        let mut app = App::new(packages());
+    fn skips_update_all_when_no_packages_are_loaded() {
+        let mut app = App::new(Vec::new());
 
         assert_eq!(app.request_update_all_available(), None);
         assert_eq!(app.pending_action, None);
