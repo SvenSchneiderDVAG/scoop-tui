@@ -20,6 +20,7 @@ enum FooterAction {
     Install,
     Uninstall,
     Update,
+    UpdateAll,
     Help,
     Quit,
 }
@@ -216,6 +217,9 @@ fn run_footer_action<B: ScoopBackend>(
         FooterAction::Update => {
             app.request_update_selected();
         }
+        FooterAction::UpdateAll => {
+            app.request_update_all_available();
+        }
         FooterAction::Help => app.open_help(),
         FooterAction::Quit => return MouseOutcome::Quit,
     }
@@ -330,6 +334,7 @@ fn footer_action_at(app: &App, area: Rect, column: u16, row: u16) -> Option<Foot
         ("[i]", FooterAction::Install),
         ("[r]", FooterAction::Uninstall),
         ("[u]", FooterAction::Update),
+        ("[U]", FooterAction::UpdateAll),
         ("[?]", FooterAction::Help),
         ("[q]", FooterAction::Quit),
     ]
@@ -515,13 +520,28 @@ mod tests {
             &mut app,
             &backend,
             area,
-            mouse_event(MouseEventKind::Down(MouseButton::Left), 74, 30),
+            mouse_event(MouseEventKind::Down(MouseButton::Left), 77, 30),
         );
         assert_eq!(
             app.pending_action
                 .as_ref()
                 .map(|pending| pending.command_preview()),
             Some("scoop update 7zip".to_string())
+        );
+
+        app.cancel_pending_action();
+        app.packages[0].latest_version = Some("26.01".to_string());
+        super::handle_mouse_event(
+            &mut app,
+            &backend,
+            area,
+            mouse_event(MouseEventKind::Down(MouseButton::Left), 88, 30),
+        );
+        assert_eq!(
+            app.pending_action
+                .as_ref()
+                .map(|pending| pending.command_preview()),
+            Some("scoop update *".to_string())
         );
     }
 

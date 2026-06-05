@@ -184,6 +184,9 @@ fn run<B: ScoopBackend + Clone + Send + 'static>(
                         KeyCode::Char('u') => {
                             app.request_update_selected();
                         }
+                        KeyCode::Char('U') => {
+                            app.request_update_all_available();
+                        }
                         KeyCode::Down | KeyCode::Char('j') => app.move_down(),
                         KeyCode::Up | KeyCode::Char('k') => app.move_up(),
                         KeyCode::PageDown => app.move_page_down(page_rows),

@@ -105,19 +105,24 @@ impl ScoopBackend for ProductionBackend {
     }
 
     fn installed(&self) -> CommandResult {
+        let refresh = self.run_scoop_command(&["update"]);
         let list = self.run_scoop_command(&["list"]);
         let status = self.run_scoop_command(&["status"]);
         let latest_versions = parse_scoop_status_latest_versions(&status.output);
         let packages =
             merge_latest_versions(parse_scoop_list_packages(&list.output), latest_versions);
-        let output = [list.output.trim_end(), status.output.trim_end()]
-            .into_iter()
-            .filter(|part| !part.is_empty())
-            .collect::<Vec<_>>()
-            .join("\n");
+        let output = [
+            refresh.output.trim_end(),
+            list.output.trim_end(),
+            status.output.trim_end(),
+        ]
+        .into_iter()
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n");
 
         CommandResult {
-            command: "scoop list && scoop status".to_string(),
+            command: installed_command_label().to_string(),
             output,
             packages,
         }
@@ -321,6 +326,10 @@ fn scoop_executable_candidates(environment: &ScoopEnvironment) -> Vec<PathBuf> {
 
 fn parse_scoop_list_packages(output: &str) -> Vec<Package> {
     parse_scoop_package_rows(output, true, "Installed package")
+}
+
+fn installed_command_label() -> &'static str {
+    "scoop update && scoop list && scoop status"
 }
 
 fn parse_scoop_search_packages(output: &str) -> Vec<Package> {
@@ -571,6 +580,14 @@ impl ScoopBackend for MockBackend {
     }
 
     fn update(&self, name: &str) -> CommandResult {
+        if name == "*" {
+            return CommandResult {
+                command: "scoop update *".to_string(),
+                output: "Mock backend: would update all outdated packages on Windows.".to_string(),
+                packages: Vec::new(),
+            };
+        }
+
         CommandResult {
             command: format!("scoop update {name}"),
             output: format!("Mock backend: would update {name} on Windows."),
@@ -671,9 +688,15 @@ mod tests {
             global_root: temp_scoop_root("missing-global"),
         };
         let backend = ProductionBackend::new(environment);
+        let original_path = env::var_os("PATH");
+        env::remove_var("PATH");
 
         let result = backend.search("7zip");
 
+        match original_path {
+            Some(path) => env::set_var("PATH", path),
+            None => env::remove_var("PATH"),
+        }
         assert_eq!(result.command, "scoop search 7zip");
         assert_eq!(
             result.output,
@@ -727,6 +750,14 @@ zim       0.76.3   extras 2026-05-20 18:31:00
                     homepage: None,
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn installed_command_label_includes_bucket_refresh_before_status() {
+        assert_eq!(
+            installed_command_label(),
+            "scoop update && scoop list && scoop status"
         );
     }
 

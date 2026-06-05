@@ -224,6 +224,18 @@ impl App {
         self.request_selected_action(PackageAction::Update)
     }
 
+    pub fn request_update_all_available(&mut self) -> Option<&PendingAction> {
+        self.packages
+            .iter()
+            .any(|package| package.update_available())
+            .then_some(())?;
+        self.pending_action = Some(PendingAction {
+            action: PackageAction::Update,
+            package_name: "*".to_string(),
+        });
+        self.pending_action.as_ref()
+    }
+
     pub fn check_scoop_available<B: ScoopBackend>(&mut self, backend: &B) {
         if !backend.is_scoop_available() {
             self.setup_prompt = Some(SetupPrompt::InstallScoop);
@@ -516,8 +528,7 @@ impl App {
 
     fn record_command(&mut self, result: &CommandResult) {
         self.output.push(format!("> {}", result.command));
-        self.output
-            .extend(result.output.lines().map(str::to_string));
+        self.output.extend(display_output_lines(result));
         if self.output.len() > MAX_OUTPUT_LINES {
             let overflow = self.output.len() - MAX_OUTPUT_LINES;
             self.output.drain(0..overflow);
@@ -560,6 +571,99 @@ impl App {
         });
         self.pending_action.as_ref()
     }
+}
+
+fn display_output_lines(result: &CommandResult) -> Vec<String> {
+    let Some((action, package_name)) = package_command(&result.command) else {
+        return result.output.lines().map(str::to_string).collect();
+    };
+    let package_label = package_output_label(package_name);
+
+    let failed = output_looks_failed(&result.output);
+    let past_tense = match action {
+        "install" => "Installed",
+        "uninstall" => "Uninstalled",
+        "update" => {
+            if output_looks_current(&result.output) {
+                "Already current"
+            } else {
+                "Updated"
+            }
+        }
+        _ => return result.output.lines().map(str::to_string).collect(),
+    };
+    let in_progress = match action {
+        "install" => "Installing",
+        "uninstall" => "Uninstalling",
+        "update" => "Updating",
+        _ => unreachable!("package_command only returns supported actions"),
+    };
+
+    if failed {
+        let failure = match action {
+            "install" => "Install failed",
+            "uninstall" => "Uninstall failed",
+            "update" => "Update failed",
+            _ => unreachable!("package_command only returns supported actions"),
+        };
+        let mut lines = vec![format!("{failure}: {package_label}")];
+        if let Some(message) = first_meaningful_output_line(&result.output) {
+            lines.push(message.to_string());
+        }
+        return lines;
+    }
+
+    vec![
+        format!("{in_progress}: {package_label}"),
+        format!("{past_tense}: {package_label}"),
+    ]
+}
+
+fn package_output_label(package_name: &str) -> &str {
+    if package_name == "*" {
+        "all packages"
+    } else {
+        package_name
+    }
+}
+
+fn package_command(command: &str) -> Option<(&str, &str)> {
+    let mut parts = command.split_whitespace();
+    if parts.next()? != "scoop" {
+        return None;
+    }
+
+    let action = parts.next()?;
+    if !matches!(action, "install" | "uninstall" | "update") {
+        return None;
+    }
+
+    let package_name = parts.next()?;
+    Some((action, package_name))
+}
+
+fn output_looks_current(output: &str) -> bool {
+    let output = output.to_lowercase();
+    output.contains("already up to date") || output.contains("is up to date")
+}
+
+fn output_looks_failed(output: &str) -> bool {
+    let output = output.to_lowercase();
+    [
+        "failed",
+        "error",
+        "not found",
+        "could not",
+        "couldn't",
+        "konnte nicht",
+        "denied",
+    ]
+    .iter()
+    .any(|needle| output.contains(needle))
+}
+
+fn first_meaningful_output_line(output: &str) -> Option<&str> {
+    output.lines().map(str::trim).find(|line| !line.is_empty())
 }
 
 #[cfg(test)]
@@ -740,7 +844,89 @@ mod tests {
         assert_eq!(result.output, "Updated git");
         assert_eq!(app.pending_action, None);
         assert!(app.output.iter().any(|line| line == "> scoop update git"));
-        assert!(app.output.iter().any(|line| line == "Updated git"));
+        assert!(app.output.iter().any(|line| line == "Updated: git"));
+    }
+
+    #[test]
+    fn requests_update_all_available_packages_as_scoop_star_update() {
+        let mut packages = packages();
+        packages[0].latest_version = Some("26.01".to_string());
+        packages[1].latest_version = Some("2.50.0".to_string());
+        let mut app = App::new(packages);
+
+        let pending = app
+            .request_update_all_available()
+            .expect("pending bulk update action");
+
+        assert_eq!(pending.command_preview(), "scoop update *");
+    }
+
+    #[test]
+    fn skips_update_all_when_no_packages_have_updates() {
+        let mut app = App::new(packages());
+
+        assert_eq!(app.request_update_all_available(), None);
+        assert_eq!(app.pending_action, None);
+    }
+
+    #[test]
+    fn confirms_update_all_and_records_simple_terminal_output() {
+        let mut packages = packages();
+        packages[0].latest_version = Some("26.01".to_string());
+        let mut app = App::new(packages);
+        app.request_update_all_available();
+
+        let result = app
+            .confirm_pending_action(&RecordingBackend::new())
+            .expect("confirmed bulk action");
+
+        assert_eq!(result.command, "scoop update *");
+        assert_eq!(
+            app.output,
+            vec![
+                "> scoop update *".to_string(),
+                "Updating: all packages".to_string(),
+                "Updated: all packages".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn confirmed_package_action_records_simple_terminal_lines_without_bucket_noise() {
+        let mut app = App::new(packages());
+        app.move_down();
+        app.request_update_selected();
+
+        app.finish_pending_action(
+            CommandResult {
+                command: "scoop update git".to_string(),
+                output: [
+                    "* 429584fc930be0ad qq-nt: Update to version 9.9.31.260528",
+                    "extras 36m6 days ago",
+                    "* 33m2dcbc841b37b stirlingpdf@2.11.0: Update `suggest`",
+                    "Updated git",
+                ]
+                .join("\n"),
+                packages: Vec::new(),
+            },
+            CommandResult {
+                command: "scoop list".to_string(),
+                output: "Listed installed packages".to_string(),
+                packages: packages()
+                    .into_iter()
+                    .filter(|package| package.installed)
+                    .collect(),
+            },
+        );
+
+        assert_eq!(
+            app.output,
+            vec![
+                "> scoop update git".to_string(),
+                "Updating: git".to_string(),
+                "Updated: git".to_string(),
+            ]
+        );
     }
 
     #[test]
@@ -1160,7 +1346,7 @@ mod tests {
         );
 
         assert_eq!(app.activity, Activity::Idle);
-        assert!(app.output.iter().any(|line| line == "Updated git"));
+        assert!(app.output.iter().any(|line| line == "Updated: git"));
     }
 
     fn packages() -> Vec<Package> {

@@ -6,6 +6,9 @@ use ratatui::widgets::{
 
 use crate::app::{App, InputMode};
 
+const DETAILS_PANEL_PERCENT: u16 = 32;
+const TERMINAL_PANEL_PERCENT: u16 = 68;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AppLayout {
     pub header: Rect,
@@ -34,7 +37,10 @@ pub fn layout_for(area: Rect) -> AppLayout {
         .split(root[1]);
     let side_panel = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Percentage(56), Constraint::Percentage(44)])
+        .constraints([
+            Constraint::Percentage(DETAILS_PANEL_PERCENT),
+            Constraint::Percentage(TERMINAL_PANEL_PERCENT),
+        ])
         .split(body[1]);
 
     AppLayout {
@@ -192,7 +198,10 @@ fn draw_packages(frame: &mut Frame<'_>, area: Rect, app: &App) {
 fn draw_side_panel(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let sections = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Percentage(56), Constraint::Percentage(44)])
+        .constraints([
+            Constraint::Percentage(DETAILS_PANEL_PERCENT),
+            Constraint::Percentage(TERMINAL_PANEL_PERCENT),
+        ])
         .split(area);
 
     let details = app
@@ -266,23 +275,33 @@ pub(crate) fn footer_text_for_width(input_mode: crate::app::InputMode, width: u1
         crate::app::InputMode::Browse => "Browse",
         crate::app::InputMode::Search => "Search",
     };
-    let full = format!(
-        "[{}]  [↑/↓ PgUp/PgDn Home/End g/G] Navigate  [Shift+Pg/Home/End] Log  [/] Filter  [s] Search Apps  [l] Toggle Installed  [i] Install  [r] Uninstall  [u] Update  [?] Help  [q] Quit",
-        mode
-    );
-    if full.chars().count() <= usize::from(width) {
-        return full;
-    }
+    let variants = [
+        format!(
+            "[{}]  [↑/↓ PgUp/PgDn Home/End g/G] Navigate  [Shift+Pg/Home/End] Log  [/] Filter  [s] Search Apps  [l] Toggle Installed  [i] Install  [r] Uninstall  [u] Update  [U] Update All  [?] Help  [q] Quit",
+            mode
+        ),
+        format!(
+            "[{}] [↑/↓] Nav [/] Filter [s] Search [l] Toggle Installed [i] Install [r] Uninstall [u] Update [U] Update All [?] Help [q] Quit",
+            mode
+        ),
+        format!(
+            "[{}] [↑/↓] Nav [/] Filter [s] Search [l] Toggle [i] Install [r] Uninstall [u] Update [U] Update All [?] Help [q] Quit",
+            mode
+        ),
+        format!(
+            "[{}] [↑/↓] Nav [/] Flt [s] Search [l] Toggle [i] Install [r] Uninstall [u] Update [U] All [?] Help [q] Quit",
+            mode
+        ),
+        format!(
+            "[{}] [↑/↓] Nav [/] Flt [s] Search [l] Toggle [i] In [r] Rm [u] Upd [U] All [?] Help [q] Quit",
+            mode
+        ),
+    ];
 
-    let compact = format!(
-        "[{}] [↑/↓] Nav [/] Filter [s] Search [l] Toggle [i] Inst [r] Uninst [u] Upd [?] Help [q] Quit",
-        mode
-    );
-    if compact.chars().count() <= usize::from(width) {
-        return compact;
-    }
-
-    format!("[{}] [↑/↓] [/] [s] [l] [i] [r] [u] [?] [q]", mode)
+    variants
+        .into_iter()
+        .find(|text| text.chars().count() <= usize::from(width))
+        .unwrap_or_else(|| format!("[{}] [/] [s] [l] [i] [r] [u] [U] [?] [q]", mode))
 }
 
 fn draw_confirmation_modal(frame: &mut Frame<'_>, app: &App) {
@@ -442,6 +461,10 @@ fn help_rows() -> Vec<HelpRow> {
             description: "Update selected package",
         },
         HelpRow::Binding {
+            keys: "[U]",
+            description: "Update all packages with updates",
+        },
+        HelpRow::Binding {
             keys: "[r]",
             description: "Uninstall selected package",
         },
@@ -512,6 +535,14 @@ mod tests {
 
     use super::*;
     use crate::backend::{MockBackend, ScoopBackend};
+
+    #[test]
+    fn layout_gives_terminal_more_height_than_details() {
+        let layout = layout_for(Rect::new(0, 0, 120, 40));
+
+        assert!(layout.terminal.height > layout.details.height);
+        assert!(layout.details.height <= 12);
+    }
 
     #[test]
     fn renders_core_regions_and_mock_package_data() {
@@ -819,8 +850,23 @@ mod tests {
 
         assert!(text.contains("[s] Search"));
         assert!(text.contains("[l] Toggle"));
+        assert!(text.contains("[U] All"));
         assert!(!text.contains("Search Apps"));
         assert!(text.chars().count() <= 100);
+    }
+
+    #[test]
+    fn footer_keeps_long_action_labels_when_width_allows() {
+        let text = footer_text_for_width(crate::app::InputMode::Browse, 132);
+
+        assert!(text.contains("[s] Search"));
+        assert!(text.contains("[l] Toggle Installed"));
+        assert!(text.contains("[i] Install"));
+        assert!(text.contains("[r] Uninstall"));
+        assert!(text.contains("[u] Update"));
+        assert!(text.contains("[U] Update All"));
+        assert!(text.contains("[q] Quit"));
+        assert!(text.chars().count() <= 132);
     }
 
     #[test]
@@ -828,6 +874,7 @@ mod tests {
         let text = footer_text_for_width(crate::app::InputMode::Browse, 48);
 
         assert!(text.contains("[s]"));
+        assert!(text.contains("[U]"));
         assert!(text.contains("[q]"));
         assert!(!text.contains("Search"));
         assert!(text.chars().count() <= 48);
