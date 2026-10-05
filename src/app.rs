@@ -116,6 +116,7 @@ pub struct App {
     spinner_index: usize,
     package_cache: PackageCache,
     installed_packages: Vec<Package>,
+    log_path: Option<String>,
 }
 
 impl App {
@@ -136,7 +137,12 @@ impl App {
             spinner_index: 0,
             package_cache: PackageCache::new(DEFAULT_PACKAGE_CACHE_TTL),
             installed_packages: Vec::new(),
+            log_path: None,
         }
+    }
+
+    pub fn set_log_path(&mut self, path: impl Into<String>) {
+        self.log_path = Some(path.into());
     }
 
     #[cfg(test)]
@@ -535,7 +541,8 @@ impl App {
 
     fn record_command(&mut self, result: &CommandResult) {
         self.output.push(format!("> {}", result.command));
-        self.output.extend(display_output_lines(result));
+        self.output
+            .extend(display_output_lines(result, self.log_path.as_deref()));
         if self.output.len() > MAX_OUTPUT_LINES {
             let overflow = self.output.len() - MAX_OUTPUT_LINES;
             self.output.drain(0..overflow);
@@ -580,7 +587,7 @@ impl App {
     }
 }
 
-fn display_output_lines(result: &CommandResult) -> Vec<String> {
+fn display_output_lines(result: &CommandResult, log_path: Option<&str>) -> Vec<String> {
     let Some((action, package_name)) = package_command(&result.command) else {
         return result.output.lines().map(str::to_string).collect();
     };
@@ -614,8 +621,14 @@ fn display_output_lines(result: &CommandResult) -> Vec<String> {
             _ => unreachable!("package_command only returns supported actions"),
         };
         let mut lines = vec![format!("{failure}: {package_label}")];
-        if let Some(message) = first_meaningful_output_line(&result.output) {
-            lines.push(message.to_string());
+        let error_lines = failure_lines(&result.output);
+        if error_lines.is_empty() {
+            lines.extend(first_meaningful_output_line(&result.output).map(str::to_string));
+        } else {
+            lines.extend(error_lines.into_iter().map(str::to_string));
+        }
+        if let Some(log_path) = log_path {
+            lines.push(format!("Full output: {log_path}"));
         }
         return lines;
     }
@@ -654,19 +667,36 @@ fn output_looks_current(output: &str) -> bool {
     output.contains("already up to date") || output.contains("is up to date")
 }
 
+const MAX_FAILURE_LINES: usize = 5;
+
 fn output_looks_failed(output: &str) -> bool {
-    let output = output.to_lowercase();
-    [
-        "failed",
-        "error",
-        "not found",
-        "could not",
-        "couldn't",
-        "konnte nicht",
-        "denied",
-    ]
-    .iter()
-    .any(|needle| output.contains(needle))
+    output.lines().any(line_looks_failed)
+}
+
+/// Matches Scoop's `ERROR ...` lines and clear failure phrases, but not prose such as
+/// "If an error occurs ..." from package notes.
+fn line_looks_failed(line: &str) -> bool {
+    let line = line.trim().to_lowercase();
+    line.starts_with("error")
+        || [
+            "failed",
+            "not found",
+            "could not",
+            "couldn't",
+            "konnte nicht",
+            "denied",
+        ]
+        .iter()
+        .any(|needle| line.contains(needle))
+}
+
+fn failure_lines(output: &str) -> Vec<&str> {
+    output
+        .lines()
+        .map(str::trim)
+        .filter(|line| line_looks_failed(line))
+        .take(MAX_FAILURE_LINES)
+        .collect()
 }
 
 fn first_meaningful_output_line(output: &str) -> Option<&str> {
@@ -891,6 +921,71 @@ mod tests {
                 "> scoop update *".to_string(),
                 "Updating: all packages".to_string(),
                 "Updated: all packages".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn error_word_in_scoop_notes_does_not_mark_update_as_failed() {
+        let mut app = App::new(packages());
+        app.request_update_all_available();
+        app.begin_pending_action();
+
+        app.finish_pending_action(
+            CommandResult {
+                command: "scoop update *".to_string(),
+                output: [
+                    "7zip: 26.01 -> 26.03",
+                    "Updating '7zip' (26.01 -> 26.03)",
+                    "'7zip' (26.03) was installed successfully!",
+                    "If an error occurs while attempting to delete files during uninstallation, run the following command and then retry:",
+                ]
+                .join("\n"),
+                packages: Vec::new(),
+            },
+            CommandResult::default(),
+        );
+
+        assert_eq!(
+            app.output,
+            vec![
+                "> scoop update *".to_string(),
+                "Updating: all packages".to_string(),
+                "Updated: all packages".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn failed_update_shows_error_lines_and_log_path() {
+        let mut app = App::new(packages());
+        app.set_log_path(r"C:\logs\scoop-tui.log");
+        app.request_update_all_available();
+        app.begin_pending_action();
+
+        app.finish_pending_action(
+            CommandResult {
+                command: "scoop update *".to_string(),
+                output: [
+                    "7zip: 26.01 -> 26.03",
+                    "Updating 7 outdated apps:",
+                    "ERROR Access to the path 'C:\\Users\\diz\\scoop\\apps\\7zip' is denied.",
+                    "Updating 'gh' (2.93.0 -> 2.102.0)",
+                ]
+                .join("\n"),
+                packages: Vec::new(),
+            },
+            CommandResult::default(),
+        );
+
+        assert_eq!(
+            app.output,
+            vec![
+                "> scoop update *".to_string(),
+                "Update failed: all packages".to_string(),
+                "ERROR Access to the path 'C:\\Users\\diz\\scoop\\apps\\7zip' is denied."
+                    .to_string(),
+                r"Full output: C:\logs\scoop-tui.log".to_string(),
             ]
         );
     }

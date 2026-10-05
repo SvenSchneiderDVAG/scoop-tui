@@ -54,6 +54,7 @@ Mouse:
 - Scrollable terminal output panel
 - Header and terminal activity indicators with animated spinner state while commands run
 - Fast startup: installed packages appear after `scoop list`, while `scoop update` and `scoop status` check for newer versions in the background
+- Command log at `%LOCALAPPDATA%\scoop-tui\scoop-tui.log` with the full output and exit status of every Scoop command; it is overwritten on each start, and failed commands point to it in the terminal panel
 - Windows single-instance guard so duplicate launches exit before drawing another TUI
 - Confirmation modal before install, update, or uninstall actions run
 - Setup prompt for Windows systems where Scoop is not detected

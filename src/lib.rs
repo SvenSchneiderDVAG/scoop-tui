@@ -3,6 +3,7 @@ pub mod backend;
 pub mod cache;
 pub mod discovery;
 pub mod input;
+pub mod log;
 pub mod models;
 pub mod single_instance;
 pub mod ui;

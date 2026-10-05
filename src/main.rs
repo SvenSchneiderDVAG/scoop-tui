@@ -23,7 +23,11 @@ use scoop_tui::backend::MockBackend;
 use scoop_tui::backend::ProductionBackend;
 use scoop_tui::backend::{CommandResult, ScoopBackend};
 use scoop_tui::input::SystemBrowser;
+#[cfg(target_os = "windows")]
+use scoop_tui::log::{default_log_path, AppLog};
 use scoop_tui::single_instance::SingleInstanceGuard;
+#[cfg(target_os = "windows")]
+use std::sync::Arc;
 
 fn main() -> Result<()> {
     let Some(_single_instance) = SingleInstanceGuard::acquire()? else {
@@ -31,11 +35,20 @@ fn main() -> Result<()> {
     };
 
     #[cfg(target_os = "windows")]
-    let backend = ProductionBackend::default();
+    let log = AppLog::create(default_log_path()).ok().map(Arc::new);
+    #[cfg(target_os = "windows")]
+    let backend = match &log {
+        Some(log) => ProductionBackend::default().with_log(Arc::clone(log)),
+        None => ProductionBackend::default(),
+    };
     #[cfg(not(target_os = "windows"))]
     let backend = MockBackend;
 
     let mut app = App::new(Vec::new());
+    #[cfg(target_os = "windows")]
+    if let Some(log) = &log {
+        app.set_log_path(log.path().display().to_string());
+    }
     let browser = SystemBrowser;
     enable_raw_mode()?;
     let mut stdout = io::stdout();
