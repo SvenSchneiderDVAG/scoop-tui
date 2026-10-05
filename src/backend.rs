@@ -22,6 +22,10 @@ pub trait ScoopBackend {
     fn environment(&self) -> ScoopEnvironment;
     fn packages(&self) -> Vec<Package>;
     fn installed(&self) -> CommandResult;
+    /// Lists installed packages without refreshing buckets or checking for updates.
+    fn list_installed(&self) -> CommandResult {
+        self.installed()
+    }
     fn search(&self, query: &str) -> CommandResult;
     fn install_scoop(&self) -> CommandResult;
     fn install(&self, name: &str) -> CommandResult;
@@ -126,6 +130,12 @@ impl ScoopBackend for ProductionBackend {
             output,
             packages,
         }
+    }
+
+    fn list_installed(&self) -> CommandResult {
+        let mut result = self.run_scoop_command(&["list"]);
+        result.packages = parse_scoop_list_packages(&result.output);
+        result
     }
 
     fn search(&self, query: &str) -> CommandResult {
@@ -751,6 +761,15 @@ zim       0.76.3   extras 2026-05-20 18:31:00
                 },
             ]
         );
+    }
+
+    #[test]
+    fn mock_list_installed_returns_only_installed_packages_quickly() {
+        let result = MockBackend.list_installed();
+
+        assert_eq!(result.command, "scoop list");
+        assert!(!result.packages.is_empty());
+        assert!(result.packages.iter().all(|package| package.installed));
     }
 
     #[test]

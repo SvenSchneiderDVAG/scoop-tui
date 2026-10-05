@@ -30,7 +30,9 @@ Keys:
 - `l` toggle installed/search view
 - `c` clear search
 - `?` open or close help; help can be scrolled with `Up`/`Down`, `k`/`j`, `PageUp`/`PageDown`, or `g`
-- `q` quit
+- `q` or `Ctrl+C` quit, even while a command is running
+
+While Scoop commands run, navigation, filtering, help, and quitting stay available; only keys that start Scoop commands wait.
 
 Mouse:
 
@@ -51,6 +53,7 @@ Mouse:
 - Integrated terminal panel showing confirmed command output
 - Scrollable terminal output panel
 - Header and terminal activity indicators with animated spinner state while commands run
+- Fast startup: installed packages appear after `scoop list`, while `scoop update` and `scoop status` check for newer versions in the background
 - Windows single-instance guard so duplicate launches exit before drawing another TUI
 - Confirmation modal before install, update, or uninstall actions run
 - Setup prompt for Windows systems where Scoop is not detected

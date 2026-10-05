@@ -7,6 +7,7 @@ use anyhow::Result;
 use crossterm::cursor::{DisableBlinking, EnableBlinking};
 use crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
+    MouseEventKind,
 };
 use crossterm::execute;
 use crossterm::terminal::{
@@ -70,6 +71,7 @@ enum BackgroundCompletion {
         requested_at: Instant,
     },
     Installed(CommandResult),
+    InstalledList(CommandResult),
     PackageAction {
         result: CommandResult,
         installed_result: CommandResult,
@@ -102,6 +104,11 @@ fn run<B: ScoopBackend + Clone + Send + 'static>(
                     continue;
                 }
 
+                if scoop_tui::input::is_force_quit_key(&key) {
+                    break;
+                }
+
+                let busy = app.activity.is_active();
                 let size = terminal.size()?;
                 let area = Rect::new(0, 0, size.width, size.height);
                 let layout = scoop_tui::ui::layout_for(area);
@@ -142,7 +149,11 @@ fn run<B: ScoopBackend + Clone + Send + 'static>(
                     _ => {}
                 }
 
-                if app.activity.is_active() {
+                if busy
+                    && (app.setup_prompt.is_some()
+                        || (app.input_mode == InputMode::Browse
+                            && scoop_tui::input::is_package_command_key(key.code)))
+                {
                     continue;
                 }
 
@@ -205,7 +216,12 @@ fn run<B: ScoopBackend + Clone + Send + 'static>(
                 }
             }
             Event::Mouse(mouse) => {
-                if app.activity.is_active() {
+                if app.activity.is_active()
+                    && !matches!(
+                        mouse.kind,
+                        MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
+                    )
+                {
                     continue;
                 }
 
@@ -234,6 +250,7 @@ fn apply_background_completions(app: &mut App, completion_rx: &Receiver<Backgrou
                 requested_at,
             } => app.finish_search_results_at(result, requested_at),
             BackgroundCompletion::Installed(result) => app.finish_installed_view(result),
+            BackgroundCompletion::InstalledList(result) => app.finish_installed_list(result),
             BackgroundCompletion::PackageAction {
                 result,
                 installed_result,
@@ -285,6 +302,8 @@ fn start_installed_command<B: ScoopBackend + Clone + Send + 'static>(
     let backend = backend.clone();
     let completion_tx = completion_tx.clone();
     thread::spawn(move || {
+        let list = backend.list_installed();
+        let _ = completion_tx.send(BackgroundCompletion::InstalledList(list));
         let result = backend.installed();
         let _ = completion_tx.send(BackgroundCompletion::Installed(result));
     });

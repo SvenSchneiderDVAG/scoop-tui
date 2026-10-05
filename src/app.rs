@@ -69,6 +69,7 @@ pub enum Activity {
     Idle,
     Searching,
     LoadingInstalled,
+    CheckingUpdates,
     InstallingScoop,
     RunningCommand {
         action: PackageAction,
@@ -82,6 +83,7 @@ impl Activity {
             Self::Idle => "Idle".to_string(),
             Self::Searching => "Searching".to_string(),
             Self::LoadingInstalled => "Loading installed".to_string(),
+            Self::CheckingUpdates => "Checking updates".to_string(),
             Self::InstallingScoop => "Installing Scoop".to_string(),
             Self::RunningCommand {
                 action,
@@ -310,18 +312,8 @@ impl App {
         result: CommandResult,
         installed_result: CommandResult,
     ) {
-        let selected_name = self.selected_package().map(|package| package.name.clone());
         self.record_command(&result);
-        self.installed_packages = installed_result.packages;
-        match self.package_view {
-            PackageView::Installed => {
-                self.packages = self.installed_packages.clone();
-                self.restore_selection_by_name(selected_name.as_deref());
-            }
-            PackageView::Search => {
-                self.packages = self.with_installed_state(self.packages.clone());
-            }
-        }
+        self.replace_installed_packages(installed_result.packages);
         self.activity = Activity::Idle;
     }
 
@@ -402,11 +394,29 @@ impl App {
         self.activity = Activity::LoadingInstalled;
     }
 
+    /// Shows the quickly listed installed packages while the slower update check continues.
+    pub fn finish_installed_list(&mut self, result: CommandResult) {
+        self.replace_installed_packages(result.packages);
+        self.activity = Activity::CheckingUpdates;
+    }
+
     pub fn finish_installed_view(&mut self, result: CommandResult) {
-        self.installed_packages = result.packages.clone();
-        self.packages = self.installed_packages.clone();
-        self.selected = 0;
+        self.replace_installed_packages(result.packages);
         self.activity = Activity::Idle;
+    }
+
+    fn replace_installed_packages(&mut self, packages: Vec<Package>) {
+        let selected_name = self.selected_package().map(|package| package.name.clone());
+        self.installed_packages = packages;
+        match self.package_view {
+            PackageView::Installed => {
+                self.packages = self.installed_packages.clone();
+                self.restore_selection_by_name(selected_name.as_deref());
+            }
+            PackageView::Search => {
+                self.packages = self.with_installed_state(self.packages.clone());
+            }
+        }
     }
 
     pub fn toggle_installed_view<B: ScoopBackend>(&mut self, backend: &B) {
@@ -1176,6 +1186,63 @@ mod tests {
 
         assert_eq!(app.activity, Activity::Idle);
         assert_eq!(app.filtered_count(), 2);
+    }
+
+    #[test]
+    fn finishing_installed_list_shows_packages_while_checking_updates() {
+        let mut app = App::new(Vec::new());
+        app.begin_installed_view();
+
+        app.finish_installed_list(CommandResult {
+            command: "scoop list".to_string(),
+            output: "Listed installed packages".to_string(),
+            packages: packages()
+                .into_iter()
+                .filter(|package| package.installed)
+                .collect(),
+        });
+
+        assert_eq!(app.activity, Activity::CheckingUpdates);
+        assert!(app.activity.is_active());
+        assert_eq!(app.filtered_count(), 2);
+        assert_eq!(app.activity.label(), "Checking updates");
+    }
+
+    #[test]
+    fn finishing_update_check_merges_latest_versions_and_keeps_selection() {
+        let installed: Vec<_> = packages()
+            .into_iter()
+            .filter(|package| package.installed)
+            .collect();
+        let mut app = App::new(Vec::new());
+        app.begin_installed_view();
+        app.finish_installed_list(CommandResult {
+            command: "scoop list".to_string(),
+            output: String::new(),
+            packages: installed.clone(),
+        });
+        app.move_down();
+        let selected_name = app.selected_package().unwrap().name.clone();
+
+        let with_latest = installed
+            .into_iter()
+            .map(|mut package| {
+                package.latest_version = Some("99.0".to_string());
+                package
+            })
+            .collect();
+        app.finish_installed_view(CommandResult {
+            command: "scoop update && scoop list && scoop status".to_string(),
+            output: String::new(),
+            packages: with_latest,
+        });
+
+        assert_eq!(app.activity, Activity::Idle);
+        assert_eq!(app.selected_package().unwrap().name, selected_name);
+        assert_eq!(
+            app.selected_package().unwrap().latest_version.as_deref(),
+            Some("99.0")
+        );
     }
 
     #[test]

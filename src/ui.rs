@@ -485,8 +485,8 @@ fn help_rows() -> Vec<HelpRow> {
             description: "Toggle this help",
         },
         HelpRow::Binding {
-            keys: "[q]",
-            description: "Quit",
+            keys: "[q] [Ctrl+C]",
+            description: "Quit (also while commands run)",
         },
     ]
 }
@@ -588,7 +588,8 @@ mod tests {
             .backend_mut()
             .get_cursor_position()
             .expect("cursor position");
-        assert_eq!(cursor_position, Position::new(54, 1));
+        let version_offset = u16::try_from(env!("CARGO_PKG_VERSION").len()).unwrap();
+        assert_eq!(cursor_position, Position::new(48 + version_offset, 1));
     }
 
     #[test]
