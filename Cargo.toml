@@ -1,6 +1,6 @@
 [package]
 name = "scoop-tui"
-version = "0.4.0"
+version = "0.4.1"
 edition = "2021"
 license = "MIT"
 
@@ -16,3 +16,8 @@ windows-sys = { version = "0.61", features = [
     "Win32_Security",
     "Win32_System_Threading",
 ] }
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
