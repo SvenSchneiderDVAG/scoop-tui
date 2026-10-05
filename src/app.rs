@@ -69,6 +69,7 @@ pub enum Activity {
     Idle,
     Searching,
     LoadingInstalled,
+    CheckingUpdates,
     InstallingScoop,
     RunningCommand {
         action: PackageAction,
@@ -82,6 +83,7 @@ impl Activity {
             Self::Idle => "Idle".to_string(),
             Self::Searching => "Searching".to_string(),
             Self::LoadingInstalled => "Loading installed".to_string(),
+            Self::CheckingUpdates => "Checking updates".to_string(),
             Self::InstallingScoop => "Installing Scoop".to_string(),
             Self::RunningCommand {
                 action,
@@ -114,6 +116,7 @@ pub struct App {
     spinner_index: usize,
     package_cache: PackageCache,
     installed_packages: Vec<Package>,
+    log_path: Option<String>,
 }
 
 impl App {
@@ -134,7 +137,12 @@ impl App {
             spinner_index: 0,
             package_cache: PackageCache::new(DEFAULT_PACKAGE_CACHE_TTL),
             installed_packages: Vec::new(),
+            log_path: None,
         }
+    }
+
+    pub fn set_log_path(&mut self, path: impl Into<String>) {
+        self.log_path = Some(path.into());
     }
 
     #[cfg(test)]
@@ -310,18 +318,8 @@ impl App {
         result: CommandResult,
         installed_result: CommandResult,
     ) {
-        let selected_name = self.selected_package().map(|package| package.name.clone());
         self.record_command(&result);
-        self.installed_packages = installed_result.packages;
-        match self.package_view {
-            PackageView::Installed => {
-                self.packages = self.installed_packages.clone();
-                self.restore_selection_by_name(selected_name.as_deref());
-            }
-            PackageView::Search => {
-                self.packages = self.with_installed_state(self.packages.clone());
-            }
-        }
+        self.replace_installed_packages(installed_result.packages);
         self.activity = Activity::Idle;
     }
 
@@ -402,11 +400,29 @@ impl App {
         self.activity = Activity::LoadingInstalled;
     }
 
+    /// Shows the quickly listed installed packages while the slower update check continues.
+    pub fn finish_installed_list(&mut self, result: CommandResult) {
+        self.replace_installed_packages(result.packages);
+        self.activity = Activity::CheckingUpdates;
+    }
+
     pub fn finish_installed_view(&mut self, result: CommandResult) {
-        self.installed_packages = result.packages.clone();
-        self.packages = self.installed_packages.clone();
-        self.selected = 0;
+        self.replace_installed_packages(result.packages);
         self.activity = Activity::Idle;
+    }
+
+    fn replace_installed_packages(&mut self, packages: Vec<Package>) {
+        let selected_name = self.selected_package().map(|package| package.name.clone());
+        self.installed_packages = packages;
+        match self.package_view {
+            PackageView::Installed => {
+                self.packages = self.installed_packages.clone();
+                self.restore_selection_by_name(selected_name.as_deref());
+            }
+            PackageView::Search => {
+                self.packages = self.with_installed_state(self.packages.clone());
+            }
+        }
     }
 
     pub fn toggle_installed_view<B: ScoopBackend>(&mut self, backend: &B) {
@@ -525,7 +541,8 @@ impl App {
 
     fn record_command(&mut self, result: &CommandResult) {
         self.output.push(format!("> {}", result.command));
-        self.output.extend(display_output_lines(result));
+        self.output
+            .extend(display_output_lines(result, self.log_path.as_deref()));
         if self.output.len() > MAX_OUTPUT_LINES {
             let overflow = self.output.len() - MAX_OUTPUT_LINES;
             self.output.drain(0..overflow);
@@ -570,7 +587,7 @@ impl App {
     }
 }
 
-fn display_output_lines(result: &CommandResult) -> Vec<String> {
+fn display_output_lines(result: &CommandResult, log_path: Option<&str>) -> Vec<String> {
     let Some((action, package_name)) = package_command(&result.command) else {
         return result.output.lines().map(str::to_string).collect();
     };
@@ -604,8 +621,14 @@ fn display_output_lines(result: &CommandResult) -> Vec<String> {
             _ => unreachable!("package_command only returns supported actions"),
         };
         let mut lines = vec![format!("{failure}: {package_label}")];
-        if let Some(message) = first_meaningful_output_line(&result.output) {
-            lines.push(message.to_string());
+        let error_lines = failure_lines(&result.output);
+        if error_lines.is_empty() {
+            lines.extend(first_meaningful_output_line(&result.output).map(str::to_string));
+        } else {
+            lines.extend(error_lines.into_iter().map(str::to_string));
+        }
+        if let Some(log_path) = log_path {
+            lines.push(format!("Full output: {log_path}"));
         }
         return lines;
     }
@@ -644,19 +667,36 @@ fn output_looks_current(output: &str) -> bool {
     output.contains("already up to date") || output.contains("is up to date")
 }
 
+const MAX_FAILURE_LINES: usize = 5;
+
 fn output_looks_failed(output: &str) -> bool {
-    let output = output.to_lowercase();
-    [
-        "failed",
-        "error",
-        "not found",
-        "could not",
-        "couldn't",
-        "konnte nicht",
-        "denied",
-    ]
-    .iter()
-    .any(|needle| output.contains(needle))
+    output.lines().any(line_looks_failed)
+}
+
+/// Matches Scoop's `ERROR ...` lines and clear failure phrases, but not prose such as
+/// "If an error occurs ..." from package notes.
+fn line_looks_failed(line: &str) -> bool {
+    let line = line.trim().to_lowercase();
+    line.starts_with("error")
+        || [
+            "failed",
+            "not found",
+            "could not",
+            "couldn't",
+            "konnte nicht",
+            "denied",
+        ]
+        .iter()
+        .any(|needle| line.contains(needle))
+}
+
+fn failure_lines(output: &str) -> Vec<&str> {
+    output
+        .lines()
+        .map(str::trim)
+        .filter(|line| line_looks_failed(line))
+        .take(MAX_FAILURE_LINES)
+        .collect()
 }
 
 fn first_meaningful_output_line(output: &str) -> Option<&str> {
@@ -881,6 +921,71 @@ mod tests {
                 "> scoop update *".to_string(),
                 "Updating: all packages".to_string(),
                 "Updated: all packages".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn error_word_in_scoop_notes_does_not_mark_update_as_failed() {
+        let mut app = App::new(packages());
+        app.request_update_all_available();
+        app.begin_pending_action();
+
+        app.finish_pending_action(
+            CommandResult {
+                command: "scoop update *".to_string(),
+                output: [
+                    "7zip: 26.01 -> 26.03",
+                    "Updating '7zip' (26.01 -> 26.03)",
+                    "'7zip' (26.03) was installed successfully!",
+                    "If an error occurs while attempting to delete files during uninstallation, run the following command and then retry:",
+                ]
+                .join("\n"),
+                packages: Vec::new(),
+            },
+            CommandResult::default(),
+        );
+
+        assert_eq!(
+            app.output,
+            vec![
+                "> scoop update *".to_string(),
+                "Updating: all packages".to_string(),
+                "Updated: all packages".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn failed_update_shows_error_lines_and_log_path() {
+        let mut app = App::new(packages());
+        app.set_log_path(r"C:\logs\scoop-tui.log");
+        app.request_update_all_available();
+        app.begin_pending_action();
+
+        app.finish_pending_action(
+            CommandResult {
+                command: "scoop update *".to_string(),
+                output: [
+                    "7zip: 26.01 -> 26.03",
+                    "Updating 7 outdated apps:",
+                    "ERROR Access to the path 'C:\\Users\\diz\\scoop\\apps\\7zip' is denied.",
+                    "Updating 'gh' (2.93.0 -> 2.102.0)",
+                ]
+                .join("\n"),
+                packages: Vec::new(),
+            },
+            CommandResult::default(),
+        );
+
+        assert_eq!(
+            app.output,
+            vec![
+                "> scoop update *".to_string(),
+                "Update failed: all packages".to_string(),
+                "ERROR Access to the path 'C:\\Users\\diz\\scoop\\apps\\7zip' is denied."
+                    .to_string(),
+                r"Full output: C:\logs\scoop-tui.log".to_string(),
             ]
         );
     }
@@ -1176,6 +1281,63 @@ mod tests {
 
         assert_eq!(app.activity, Activity::Idle);
         assert_eq!(app.filtered_count(), 2);
+    }
+
+    #[test]
+    fn finishing_installed_list_shows_packages_while_checking_updates() {
+        let mut app = App::new(Vec::new());
+        app.begin_installed_view();
+
+        app.finish_installed_list(CommandResult {
+            command: "scoop list".to_string(),
+            output: "Listed installed packages".to_string(),
+            packages: packages()
+                .into_iter()
+                .filter(|package| package.installed)
+                .collect(),
+        });
+
+        assert_eq!(app.activity, Activity::CheckingUpdates);
+        assert!(app.activity.is_active());
+        assert_eq!(app.filtered_count(), 2);
+        assert_eq!(app.activity.label(), "Checking updates");
+    }
+
+    #[test]
+    fn finishing_update_check_merges_latest_versions_and_keeps_selection() {
+        let installed: Vec<_> = packages()
+            .into_iter()
+            .filter(|package| package.installed)
+            .collect();
+        let mut app = App::new(Vec::new());
+        app.begin_installed_view();
+        app.finish_installed_list(CommandResult {
+            command: "scoop list".to_string(),
+            output: String::new(),
+            packages: installed.clone(),
+        });
+        app.move_down();
+        let selected_name = app.selected_package().unwrap().name.clone();
+
+        let with_latest = installed
+            .into_iter()
+            .map(|mut package| {
+                package.latest_version = Some("99.0".to_string());
+                package
+            })
+            .collect();
+        app.finish_installed_view(CommandResult {
+            command: "scoop update && scoop list && scoop status".to_string(),
+            output: String::new(),
+            packages: with_latest,
+        });
+
+        assert_eq!(app.activity, Activity::Idle);
+        assert_eq!(app.selected_package().unwrap().name, selected_name);
+        assert_eq!(
+            app.selected_package().unwrap().latest_version.as_deref(),
+            Some("99.0")
+        );
     }
 
     #[test]

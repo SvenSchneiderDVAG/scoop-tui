@@ -1,16 +1,18 @@
 use crate::discovery::ScoopEnvironment;
+use crate::log::AppLog;
 use crate::models::Package;
 use std::collections::HashMap;
 use std::env;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::Arc;
 
 pub const SCOOP_INSTALL_COMMAND: &str =
     "Invoke-RestMethod -Uri https://get.scoop.sh | Invoke-Expression";
 const SCOOP_NOT_FOUND_MESSAGE: &str =
     "Scoop executable was not found. Install Scoop or make sure its shims directory is on PATH.";
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CommandResult {
     pub command: String,
     pub output: String,
@@ -22,6 +24,10 @@ pub trait ScoopBackend {
     fn environment(&self) -> ScoopEnvironment;
     fn packages(&self) -> Vec<Package>;
     fn installed(&self) -> CommandResult;
+    /// Lists installed packages without refreshing buckets or checking for updates.
+    fn list_installed(&self) -> CommandResult {
+        self.installed()
+    }
     fn search(&self, query: &str) -> CommandResult;
     fn install_scoop(&self) -> CommandResult;
     fn install(&self, name: &str) -> CommandResult;
@@ -32,19 +38,26 @@ pub trait ScoopBackend {
 #[derive(Debug, Clone)]
 pub struct ProductionBackend {
     environment: ScoopEnvironment,
+    log: Option<Arc<AppLog>>,
 }
 
 impl Default for ProductionBackend {
     fn default() -> Self {
-        Self {
-            environment: ScoopEnvironment::discover(),
-        }
+        Self::new(ScoopEnvironment::discover())
     }
 }
 
 impl ProductionBackend {
     pub fn new(environment: ScoopEnvironment) -> Self {
-        Self { environment }
+        Self {
+            environment,
+            log: None,
+        }
+    }
+
+    pub fn with_log(mut self, log: Arc<AppLog>) -> Self {
+        self.log = Some(log);
+        self
     }
 
     fn scoop_executable(&self) -> Option<PathBuf> {
@@ -54,6 +67,7 @@ impl ProductionBackend {
     fn run_scoop_command(&self, args: &[&str]) -> CommandResult {
         let command = format!("scoop {}", args.join(" "));
         let Some(executable) = self.scoop_executable() else {
+            self.log_command(&command, "not started", SCOOP_NOT_FOUND_MESSAGE);
             return CommandResult {
                 command,
                 output: SCOOP_NOT_FOUND_MESSAGE.to_string(),
@@ -61,7 +75,10 @@ impl ProductionBackend {
             };
         };
         let mut process = scoop_command(&executable, args);
+        self.run_process(command, &mut process, "scoop")
+    }
 
+    fn run_process(&self, command: String, process: &mut Command, program: &str) -> CommandResult {
         match process.output() {
             Ok(output) => {
                 let stdout = String::from_utf8_lossy(&output.stdout);
@@ -71,6 +88,7 @@ impl ProductionBackend {
                     .filter(|part| !part.is_empty())
                     .collect::<Vec<_>>()
                     .join("\n");
+                self.log_command(&command, &output.status.to_string(), &combined);
 
                 CommandResult {
                     command,
@@ -82,11 +100,21 @@ impl ProductionBackend {
                     packages: Vec::new(),
                 }
             }
-            Err(error) => CommandResult {
-                command,
-                output: format!("Failed to execute scoop: {error}"),
-                packages: Vec::new(),
-            },
+            Err(error) => {
+                let message = format!("Failed to execute {program}: {error}");
+                self.log_command(&command, "not started", &message);
+                CommandResult {
+                    command,
+                    output: message,
+                    packages: Vec::new(),
+                }
+            }
+        }
+    }
+
+    fn log_command(&self, command: &str, status: &str, output: &str) {
+        if let Some(log) = &self.log {
+            log.write_command(command, status, output);
         }
     }
 }
@@ -128,6 +156,12 @@ impl ScoopBackend for ProductionBackend {
         }
     }
 
+    fn list_installed(&self) -> CommandResult {
+        let mut result = self.run_scoop_command(&["list"]);
+        result.packages = parse_scoop_list_packages(&result.output);
+        result
+    }
+
     fn search(&self, query: &str) -> CommandResult {
         let mut result = if query.trim().is_empty() {
             self.run_scoop_command(&["search"])
@@ -150,34 +184,7 @@ impl ScoopBackend for ProductionBackend {
             &script,
         ]);
         hide_child_window(&mut process);
-        let output = process.output();
-
-        match output {
-            Ok(output) => {
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                let combined = [stdout.trim_end(), stderr.trim_end()]
-                    .into_iter()
-                    .filter(|part| !part.is_empty())
-                    .collect::<Vec<_>>()
-                    .join("\n");
-
-                CommandResult {
-                    command,
-                    output: if combined.is_empty() {
-                        format!("Command exited with status {}", output.status)
-                    } else {
-                        combined
-                    },
-                    packages: Vec::new(),
-                }
-            }
-            Err(error) => CommandResult {
-                command,
-                output: format!("Failed to execute PowerShell: {error}"),
-                packages: Vec::new(),
-            },
-        }
+        self.run_process(command, &mut process, "PowerShell")
     }
 
     fn install(&self, name: &str) -> CommandResult {
@@ -751,6 +758,15 @@ zim       0.76.3   extras 2026-05-20 18:31:00
                 },
             ]
         );
+    }
+
+    #[test]
+    fn mock_list_installed_returns_only_installed_packages_quickly() {
+        let result = MockBackend.list_installed();
+
+        assert_eq!(result.command, "scoop list");
+        assert!(!result.packages.is_empty());
+        assert!(result.packages.iter().all(|package| package.installed));
     }
 
     #[test]

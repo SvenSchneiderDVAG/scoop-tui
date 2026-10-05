@@ -1,4 +1,4 @@
-use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
 use std::process::Command;
 
@@ -27,6 +27,15 @@ enum FooterAction {
 
 pub trait BrowserOpener {
     fn open(&self, url: &str);
+}
+
+/// Browse-mode keys that start or confirm Scoop commands and must wait for running commands.
+pub fn is_package_command_key(code: KeyCode) -> bool {
+    matches!(code, KeyCode::Char('s' | 'l' | 'i' | 'r' | 'u' | 'U' | 'y'))
+}
+
+pub fn is_force_quit_key(key: &KeyEvent) -> bool {
+    key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL)
 }
 
 pub struct SystemBrowser;
@@ -387,6 +396,33 @@ mod tests {
         fn open(&self, url: &str) {
             self.opened_urls.borrow_mut().push(url.to_string());
         }
+    }
+
+    #[test]
+    fn package_command_keys_are_identified_for_blocking_while_busy() {
+        use crossterm::event::KeyCode;
+
+        for key in ['s', 'l', 'i', 'r', 'u', 'U', 'y'] {
+            assert!(super::is_package_command_key(KeyCode::Char(key)), "{key}");
+        }
+        for key in ['j', 'k', 'g', 'G', '/', 'c', 'q', '?', 'n'] {
+            assert!(!super::is_package_command_key(KeyCode::Char(key)), "{key}");
+        }
+        assert!(!super::is_package_command_key(KeyCode::Down));
+    }
+
+    #[test]
+    fn ctrl_c_is_force_quit_key() {
+        use crossterm::event::{KeyCode, KeyEvent};
+
+        assert!(super::is_force_quit_key(&KeyEvent::new(
+            KeyCode::Char('c'),
+            KeyModifiers::CONTROL
+        )));
+        assert!(!super::is_force_quit_key(&KeyEvent::new(
+            KeyCode::Char('c'),
+            KeyModifiers::NONE
+        )));
     }
 
     #[test]
